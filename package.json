@@ -1,0 +1,23 @@
+{
+  "name": "com.cpritch.depthforge",
+  "version": "0.1.0",
+  "displayName": "DepthForge",
+  "description": "AI-Powered Heightmap Generator for Unity using local depth inference models (Depth Anything). Compatible with MicroSplat and SPOM.",
+  "unity": "2023.2",
+  "unityRelease": "0a1",
+  "dependencies": {
+    "com.unity.ai.inference": "2.2.0"
+  },
+  "keywords": [
+    "ai",
+    "depth",
+    "heightmap",
+    "microsplat",
+    "parallax"
+  ],
+  "author": {
+    "name": "CPritch",
+    "email": "",
+    "url": ""
+  }
+}

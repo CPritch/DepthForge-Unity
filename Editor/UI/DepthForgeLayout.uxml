@@ -1,0 +1,37 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" xsi="http://www.w3.org/2001/XMLSchema-instance" engine="UnityEngine.UIElements" editor="UnityEditor.UIElements" noNamespaceSchemaLocation="../../UIElementsSchema/UIElements.xsd" editor-extension-mode="True">
+    <Style src="project://database/Packages/com.cpritch.depthforge/Editor/UI/DepthForgeStyle.uss?fileID=7433441132597879392&amp;guid=6b0c2a23ebf94794ba99589d10e53a3c&amp;type=3#DepthForgeStyle" />
+    <ui:VisualElement class="container">
+        <ui:Label text="DepthForge" class="header" />
+        <ui:Label text="Heightmap Generator" class="subtitle" />
+        
+        <ui:VisualElement class="section">
+            <ui:Label text="Input Texture" class="section-header" />
+            <uie:ObjectField name="inputTextureField" type="UnityEngine.Texture2D, UnityEngine.CoreModule" label="Base Map (RGB)" />
+        </ui:VisualElement>
+
+        <ui:VisualElement class="section">
+            <ui:Label text="Inference Settings" class="section-header" />
+            <ui:EnumField name="modelSizeField" label="Model Size" />
+            <ui:EnumField name="backendField" label="Inference Backend" />
+        </ui:VisualElement>
+
+        <ui:VisualElement class="section">
+            <ui:Label text="Export Settings" class="section-header" />
+            <ui:EnumField name="outputFormatField" label="Export Format" />
+        </ui:VisualElement>
+
+        <ui:VisualElement class="section preview-section">
+            <ui:Label text="Preview" class="section-header" />
+            <ui:VisualElement class="preview-container">
+                <ui:VisualElement name="inputPreview" class="preview-box" />
+                <ui:VisualElement class="preview-divider" />
+                <ui:VisualElement name="outputPreview" class="preview-box" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:VisualElement class="footer">
+            <ui:Button name="generateButton" text="Generate Heightmap" class="generate-button" />
+            <ui:ProgressBar name="progressBar" class="hidden" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>
