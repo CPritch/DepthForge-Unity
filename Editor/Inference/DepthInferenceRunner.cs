@@ -68,7 +68,7 @@ namespace CPritch.DepthForge.Editor.Inference
                     Tensor<float> outputTensor = _worker.PeekOutput() as Tensor<float>;
                     return ImageProcessor.PostprocessTensor(outputTensor, W, H);
                 }
-                catch (Exception ex) when (_backend == BackendType.GPUCompute)
+                catch (Exception) when (_backend == BackendType.GPUCompute)
                 {
                     FallbackToCPU();
                     return Execute(inputTexture, targetSize);
@@ -78,6 +78,53 @@ namespace CPritch.DepthForge.Editor.Inference
             // Otherwise, run tiled inference to preserve high-resolution crack and ridge details
             int stride = 388; // 25% overlap (518 * 0.25 = 130, 518 - 130 = 388)
             
+            // Run global low-resolution inference first to act as a guide for tiling alignment
+            float[] globalDepthOriginal = null;
+            try
+            {
+                using Tensor<float> globalInput = ImageProcessor.PreprocessTexture(inputTexture, T, T, _inputRank);
+                _worker.Schedule(globalInput);
+                Tensor<float> globalOutput = _worker.PeekOutput() as Tensor<float>;
+                globalDepthOriginal = globalOutput.DownloadToArray();
+            }
+            catch (Exception) when (_backend == BackendType.GPUCompute)
+            {
+                FallbackToCPU();
+                return Execute(inputTexture, targetSize);
+            }
+
+            // Bilinearly upscale the global low-resolution guide to original resolution (W x H)
+            // and flip its Y axis to match texture coordinate space
+            float[] globalDepth = new float[W * H];
+            float divH = H > 1 ? (float)(H - 1) : 1f;
+            float divW = W > 1 ? (float)(W - 1) : 1f;
+            for (int y = 0; y < H; y++)
+            {
+                float gy = (float)y / divH * (T - 1);
+                int y0 = Mathf.FloorToInt(gy);
+                int y1 = Mathf.Min(y0 + 1, T - 1);
+                float dy = gy - y0;
+
+                int ty0 = T - 1 - y0;
+                int ty1 = T - 1 - y1;
+
+                for (int x = 0; x < W; x++)
+                {
+                    float gx = (float)x / divW * (T - 1);
+                    int x0 = Mathf.FloorToInt(gx);
+                    int x1 = Mathf.Min(x0 + 1, T - 1);
+                    float dx = gx - x0;
+
+                    float v00 = globalDepthOriginal[ty0 * T + x0];
+                    float v01 = globalDepthOriginal[ty0 * T + x1];
+                    float v10 = globalDepthOriginal[ty1 * T + x0];
+                    float v11 = globalDepthOriginal[ty1 * T + x1];
+
+                    float val = (1f - dy) * ((1f - dx) * v00 + dx * v01) + dy * ((1f - dx) * v10 + dx * v11);
+                    globalDepth[y * W + x] = val;
+                }
+            }
+
             List<int> xCoords = new List<int>();
             if (W <= T)
             {
@@ -119,22 +166,16 @@ namespace CPritch.DepthForge.Editor.Inference
             float[] accumulatedDepth = new float[W * H];
             float[] accumulatedWeight = new float[W * H];
 
-            // Precompute 2D smoothstep weight mask
-            float[] tileWeightMask = new float[T * T];
-            for (int y = 0; y < T; y++)
+            // Precompute 1D smoothstep weight masks
+            float[] tileWeightMaskX = new float[T];
+            float[] tileWeightMaskY = new float[T];
+            for (int i = 0; i < T; i++)
             {
-                float ny = Mathf.Min(y, T - 1 - y) / (T * 0.5f);
-                ny = Mathf.Clamp01(ny);
-                float wy = Mathf.SmoothStep(0f, 1f, ny);
-                
-                for (int x = 0; x < T; x++)
-                {
-                    float nx = Mathf.Min(x, T - 1 - x) / (T * 0.5f);
-                    nx = Mathf.Clamp01(nx);
-                    float wx = Mathf.SmoothStep(0f, 1f, nx);
-                    
-                    tileWeightMask[y * T + x] = wx * wy;
-                }
+                float n = Mathf.Min(i, T - 1 - i) / (T * 0.5f);
+                n = Mathf.Clamp01(n);
+                float w = Mathf.SmoothStep(0f, 1f, n);
+                tileWeightMaskX[i] = w;
+                tileWeightMaskY[i] = w;
             }
 
             RenderTexture tileRT = RenderTexture.GetTemporary(T, T, 0, RenderTextureFormat.ARGB32);
@@ -160,31 +201,74 @@ namespace CPritch.DepthForge.Editor.Inference
                         // Download tile data to CPU
                         float[] tileData = outputTensor.DownloadToArray();
 
+                        // Extract guide crop from upscaled global reference
+                        float[] guideCrop = new float[T * T];
+                        for (int y = 0; y < T; y++)
+                        {
+                            int fullY = ty + y;
+                            for (int x = 0; x < T; x++)
+                            {
+                                int fullX = tx + x;
+                                guideCrop[y * T + x] = globalDepth[fullY * W + fullX];
+                            }
+                        }
+
+                        // Align tile to global guide using offset (mean shift) only
+                        // This prevents high-frequency contrast collapse (scale squishing)
+                        // while ensuring all tiles share the same global height baseline.
+                        double sumX = 0;
+                        double sumY = 0;
+                        int n = T * T;
+
+                        for (int y = 0; y < T; y++)
+                        {
+                            for (int x = 0; x < T; x++)
+                            {
+                                int tileIdx = (T - 1 - y) * T + x;
+                                sumX += tileData[tileIdx];
+                                sumY += guideCrop[y * T + x];
+                            }
+                        }
+
+                        float offset = (float)((sumY - sumX) / n);
+
                         // Accumulate depth and weight
                         for (int y = 0; y < T; y++)
                         {
                             int fullY = ty + y;
                             if (fullY >= H) continue;
 
+                            float wy = tileWeightMaskY[y];
+                            if (ty == 0 && y < T / 2) wy = 1.0f;
+                            if (ty + T >= H && y >= T / 2) wy = 1.0f;
+
                             for (int x = 0; x < T; x++)
                             {
                                 int fullX = tx + x;
                                 if (fullX >= W) continue;
 
-                                // Flip the Y axis of tileData because RenderTexture input to ToTensor
-                                // is vertically flipped on GPU graphics APIs (Vulkan, Metal, D3D).
+                                float wx = tileWeightMaskX[x];
+                                if (tx == 0 && x < T / 2) wx = 1.0f;
+                                if (tx + T >= W && x >= T / 2) wx = 1.0f;
+
                                 int tileIdx = (T - 1 - y) * T + x;
-                                float w = tileWeightMask[y * T + x];
+                                float w = wx * wy;
+
+                                // Prevent dividing by zero or getting NaN weight
+                                if (w < 1e-5f) w = 1e-5f;
+
+                                // Apply offset alignment to tile pixel
+                                float alignedVal = tileData[tileIdx] + offset;
 
                                 int fullIdx = fullY * W + fullX;
-                                accumulatedDepth[fullIdx] += tileData[tileIdx] * w;
+                                accumulatedDepth[fullIdx] += alignedVal * w;
                                 accumulatedWeight[fullIdx] += w;
                             }
                         }
                     }
                 }
             }
-            catch (Exception ex) when (_backend == BackendType.GPUCompute)
+            catch (Exception) when (_backend == BackendType.GPUCompute)
             {
                 RenderTexture.ReleaseTemporary(tileRT);
                 FallbackToCPU();

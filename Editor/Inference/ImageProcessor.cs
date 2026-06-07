@@ -106,5 +106,57 @@ namespace CPritch.DepthForge.Editor.Inference
 
             return outTex;
         }
+
+        /// <summary>
+        /// Applies Contrast, Midpoint, and Invert adjustments to a heightmap texture in-memory.
+        /// </summary>
+        public static Texture2D ApplyAdjustments(Texture2D source, float contrast, float midpoint, bool invert)
+        {
+            if (source == null) return null;
+
+            int w = source.width;
+            int h = source.height;
+
+            Texture2D adjusted = new Texture2D(w, h, TextureFormat.RGB24, false, true);
+            Color32[] pixels = source.GetPixels32();
+
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                float val = pixels[i].r / 255f;
+
+                if (invert)
+                {
+                    val = 1f - val;
+                }
+
+                // Apply contrast around midpoint
+                val = Mathf.Clamp01((val - midpoint) * contrast + midpoint);
+
+                byte grayValue = (byte)Mathf.Clamp(val * 255f, 0f, 255f);
+                pixels[i] = new Color32(grayValue, grayValue, grayValue, 255);
+            }
+
+            // Fix border artifacts: copy adjacent pixels to the outer 2-pixel border
+            // This removes neural network padding anomalies without losing details or adding sloped pill shapes
+            int borderSize = 2;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int clampedX = Mathf.Clamp(x, borderSize, w - 1 - borderSize);
+                    int clampedY = Mathf.Clamp(y, borderSize, h - 1 - borderSize);
+                    
+                    if (clampedX != x || clampedY != y)
+                    {
+                        pixels[y * w + x] = pixels[clampedY * w + clampedX];
+                    }
+                }
+            }
+
+            adjusted.SetPixels32(pixels);
+            adjusted.Apply();
+
+            return adjusted;
+        }
     }
 }
