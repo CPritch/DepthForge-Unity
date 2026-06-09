@@ -86,6 +86,16 @@ namespace CPritch.DepthForge.Editor
             CPUBurst
         }
 
+        public enum TilingAlignment
+        {
+            [InspectorName("Offset Only (Mean Shift)")]
+            OffsetOnly,
+            [InspectorName("Linear Regression (Full)")]
+            LinearRegressionFull,
+            [InspectorName("Linear Regression (Downscaled 64x64)")]
+            LinearRegressionDownscaled
+        }
+
         private const string MODEL_SMALL_URL = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx";
         private const string MODEL_SMALL_DATA_URL = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data";
         
@@ -111,6 +121,9 @@ namespace CPritch.DepthForge.Editor
 
         // Runner and UI Fields
         private DepthInferenceRunner _runner;
+        // Phase 1 (R1): the current source/recipe/state as a Job. The UI still edits live for now;
+        // this carries persistence (sidecar) and seeds the future batch queue.
+        private CPritch.DepthForge.Editor.Data.Job _currentJob;
         private ObjectField _inputTextureField;
         private EnumField _modelSizeField;
         private EnumField _backendField;
@@ -120,8 +133,13 @@ namespace CPritch.DepthForge.Editor
         private Slider _strengthSlider;
         private Slider _contrastSlider;
         private Slider _midpointSlider;
+        private Slider _flattenSlider;
+        private Slider _normalStrengthSlider;
         private Toggle _invertToggle;
+        private Toggle _exportNormalToggle;
         private Toggle _autoAssignToggle;
+        private Toggle _tiledInferenceToggle;
+        private EnumField _tilingAlignmentField;
         private Toggle _texturedPreviewToggle;
         private Label _microSplatStatusLabel;
 
@@ -250,11 +268,43 @@ namespace CPritch.DepthForge.Editor
             _strengthSlider = root.Q<Slider>("strengthSlider");
             _contrastSlider = root.Q<Slider>("contrastSlider");
             _midpointSlider = root.Q<Slider>("midpointSlider");
+            _flattenSlider = root.Q<Slider>("flattenSlider");
             _invertToggle = root.Q<Toggle>("invertToggle");
+            _tiledInferenceToggle = root.Q<Toggle>("tiledInferenceToggle");
+            _tilingAlignmentField = root.Q<EnumField>("tilingAlignmentField");
+
+            if (_tilingAlignmentField != null)
+            {
+                _tilingAlignmentField.Init(TilingAlignment.LinearRegressionDownscaled);
+            }
+
+            if (_tiledInferenceToggle != null)
+            {
+                _tiledInferenceToggle.RegisterValueChangedCallback(evt =>
+                {
+                    if (_tilingAlignmentField != null)
+                    {
+                        _tilingAlignmentField.SetEnabled(evt.newValue);
+                    }
+                });
+                
+                if (_tilingAlignmentField != null)
+                {
+                    _tilingAlignmentField.SetEnabled(_tiledInferenceToggle.value);
+                }
+            }
             
             // MicroSplat settings
+            _exportNormalToggle = root.Q<Toggle>("exportNormalToggle");
+            _normalStrengthSlider = root.Q<Slider>("normalStrengthSlider");
             _autoAssignToggle = root.Q<Toggle>("autoAssignToggle");
             _microSplatStatusLabel = root.Q<Label>("microSplatStatusLabel");
+
+            if (_exportNormalToggle != null && _normalStrengthSlider != null)
+            {
+                _normalStrengthSlider.SetEnabled(_exportNormalToggle.value);
+                _exportNormalToggle.RegisterValueChangedCallback(evt => _normalStrengthSlider.SetEnabled(evt.newValue));
+            }
 
             // Tabs & Preview
             _btnPreview2D = root.Q<Button>("btnPreview2D");
@@ -321,13 +371,57 @@ namespace CPritch.DepthForge.Editor
             _inputTextureField.RegisterValueChangedCallback(evt =>
             {
                 Texture2D tex = evt.newValue as Texture2D;
+
+                if (_rawHeightmap != null)
+                {
+                    bool proceed = EditorUtility.DisplayDialog(
+                        "Unsaved Heightmap Data",
+                        "Changing the base texture will discard your current unsaved heightmap. Do you want to proceed?",
+                        "Yes",
+                        "Cancel"
+                    );
+
+                    if (!proceed)
+                    {
+                        _inputTextureField.SetValueWithoutNotify(evt.previousValue as Texture2D);
+                        return;
+                    }
+
+                    // Clear heightmap since we are changing texture
+                    CleanupPreviewResources();
+                    SetActionButtonsEnabled(false);
+                }
+
                 if (tex != null)
                 {
                     inputPreview.style.backgroundImage = tex;
+
+                    // Phase 1 (R1/R5): wrap the source in a Job and reload any persisted recipe
+                    // so prior depth work on this texture is restored.
+                    _currentJob = new CPritch.DepthForge.Editor.Data.Job(tex);
+                    var loadedRecipe = CPritch.DepthForge.Editor.Data.RecipeSidecar.Load(tex);
+                    if (loadedRecipe != null)
+                    {
+                        _currentJob.recipe = loadedRecipe;
+
+                        // Restore the cached raw depth so revisit is instant AND still editable:
+                        // re-derive the adjusted map from raw + recipe, with no re-inference.
+                        var cachedRaw = CPritch.DepthForge.Editor.Data.RawCache.LoadRaw(tex);
+                        if (cachedRaw != null)
+                        {
+                            if (_rawHeightmap != null) DestroyImmediate(_rawHeightmap);
+                            _rawHeightmap = cachedRaw;
+                        }
+
+                        ApplyRecipeToUI(loadedRecipe); // re-derives the adjusted map if a raw is present
+
+                        if (_rawHeightmap != null) SetActionButtonsEnabled(true);
+                    }
                 }
                 else
                 {
                     inputPreview.style.backgroundImage = null;
+                    _currentJob = null;
                 }
                 UpdatePreviewMaterial();
                 Repaint();
@@ -353,6 +447,10 @@ namespace CPritch.DepthForge.Editor
             if (_invertToggle != null)
             {
                 _invertToggle.RegisterValueChangedCallback(evt => UpdateAdjustedHeightmap());
+            }
+            if (_flattenSlider != null)
+            {
+                _flattenSlider.RegisterValueChangedCallback(evt => UpdateAdjustedHeightmap());
             }
             if (_texturedPreviewToggle != null)
             {
@@ -637,7 +735,11 @@ namespace CPritch.DepthForge.Editor
                 
                 int targetSize = 518;
 
-                Texture2D resultTex = _runner.Execute(inputTex, targetSize);
+                bool useTiling = _tiledInferenceToggle != null ? _tiledInferenceToggle.value : false;
+                DepthInferenceRunner.TilingAlignment tilingAlignment = _tilingAlignmentField != null ? 
+                    (DepthInferenceRunner.TilingAlignment)_tilingAlignmentField.value : 
+                    DepthInferenceRunner.TilingAlignment.LinearRegressionDownscaled;
+                Texture2D resultTex = _runner.Execute(inputTex, targetSize, useTiling, tilingAlignment);
 
                 if (resultTex != null)
                 {
@@ -672,9 +774,10 @@ namespace CPritch.DepthForge.Editor
             float contrast = _contrastSlider != null ? _contrastSlider.value : 1f;
             float midpoint = _midpointSlider != null ? _midpointSlider.value : 0.5f;
             bool invert = _invertToggle != null ? _invertToggle.value : true;
+            float flatten = _flattenSlider != null ? _flattenSlider.value : 0f;
 
             Texture2D oldAdjusted = _adjustedHeightmap;
-            _adjustedHeightmap = ImageProcessor.ApplyAdjustments(_rawHeightmap, contrast, midpoint, invert);
+            _adjustedHeightmap = ImageProcessor.ApplyAdjustments(_rawHeightmap, contrast, midpoint, invert, flatten);
 
             if (oldAdjusted != null)
             {
@@ -690,6 +793,55 @@ namespace CPritch.DepthForge.Editor
             UpdatePreviewMesh();
             UpdatePreviewMaterial();
             Repaint();
+        }
+
+        // ---- Phase 1 (R1): Recipe <-> UI binding -------------------------------------------
+        // The window's nested enums (ModelSize/InferenceBackend/TilingAlignment) mirror the
+        // model-layer enums in order, so conversion is a straight int cast at this boundary.
+
+        private CPritch.DepthForge.Editor.Data.Recipe BuildRecipeFromUI()
+        {
+            var r = new CPritch.DepthForge.Editor.Data.Recipe();
+            if (_modelSizeField != null) r.modelSize = (CPritch.DepthForge.Editor.Data.DepthModelSize)(int)(ModelSize)_modelSizeField.value;
+            if (_backendField != null) r.backend = (CPritch.DepthForge.Editor.Data.InferenceBackendChoice)(int)(InferenceBackend)_backendField.value;
+            if (_tiledInferenceToggle != null) r.tiledInference = _tiledInferenceToggle.value;
+            if (_tilingAlignmentField != null) r.tilingAlignment = (CPritch.DepthForge.Editor.Data.TilingAlignment)(int)(TilingAlignment)_tilingAlignmentField.value;
+            if (_invertToggle != null) r.invert = _invertToggle.value;
+            if (_contrastSlider != null) r.contrast = _contrastSlider.value;
+            if (_midpointSlider != null) r.midpoint = _midpointSlider.value;
+            if (_flattenSlider != null) r.flatten = _flattenSlider.value;
+            if (_exportNormalToggle != null) r.exportNormal = _exportNormalToggle.value;
+            if (_normalStrengthSlider != null) r.normalStrength = _normalStrengthSlider.value;
+            if (_outputFormatField != null) r.format = (CPritch.DepthForge.Editor.Utils.TextureExporter.ExportFormat)_outputFormatField.value;
+            if (_autoAssignToggle != null) r.autoAssignMicroSplat = _autoAssignToggle.value;
+            // AO fields + preview-only strength are intentionally not bound here yet (AO = Phase 2).
+            return r;
+        }
+
+        private void ApplyRecipeToUI(CPritch.DepthForge.Editor.Data.Recipe r)
+        {
+            if (r == null) return;
+            if (_modelSizeField != null) _modelSizeField.SetValueWithoutNotify((ModelSize)(int)r.modelSize);
+            if (_backendField != null) _backendField.SetValueWithoutNotify((InferenceBackend)(int)r.backend);
+            if (_tiledInferenceToggle != null) _tiledInferenceToggle.SetValueWithoutNotify(r.tiledInference);
+            if (_tilingAlignmentField != null)
+            {
+                _tilingAlignmentField.SetValueWithoutNotify((TilingAlignment)(int)r.tilingAlignment);
+                _tilingAlignmentField.SetEnabled(r.tiledInference);
+            }
+            if (_invertToggle != null) _invertToggle.SetValueWithoutNotify(r.invert);
+            if (_contrastSlider != null) _contrastSlider.SetValueWithoutNotify(r.contrast);
+            if (_midpointSlider != null) _midpointSlider.SetValueWithoutNotify(r.midpoint);
+            if (_flattenSlider != null) _flattenSlider.SetValueWithoutNotify(r.flatten);
+            if (_exportNormalToggle != null) _exportNormalToggle.SetValueWithoutNotify(r.exportNormal);
+            if (_normalStrengthSlider != null)
+            {
+                _normalStrengthSlider.SetValueWithoutNotify(r.normalStrength);
+                _normalStrengthSlider.SetEnabled(r.exportNormal);
+            }
+            if (_outputFormatField != null) _outputFormatField.SetValueWithoutNotify(r.format);
+            // Refresh the derived preview only if a heightmap already exists for this source.
+            if (_rawHeightmap != null) UpdateAdjustedHeightmap();
         }
 
         private void UpdatePreviewMesh()
@@ -915,13 +1067,41 @@ namespace CPritch.DepthForge.Editor
 
             if (path != null)
             {
+                // Optionally derive a normal map from the same adjusted heightmap. This gives MicroSplat
+                // real normal data rather than letting it synthesize (often poor) normals from the diffuse.
+                string normalPath = null;
+                bool exportNormal = _exportNormalToggle != null && _exportNormalToggle.value;
+                if (exportNormal)
+                {
+                    float normalStrength = _normalStrengthSlider != null ? _normalStrengthSlider.value : 8f;
+                    Texture2D normalTex = ImageProcessor.GenerateNormalMap(_adjustedHeightmap, normalStrength);
+                    if (normalTex != null)
+                    {
+                        normalPath = CPritch.DepthForge.Editor.Utils.TextureExporter.SaveNormalMap(normalTex, inputTex);
+                        DestroyImmediate(normalTex);
+                    }
+                }
+
                 bool autoAssign = _autoAssignToggle != null ? _autoAssignToggle.value : false;
                 if (autoAssign && IsMicroSplatPresent())
                 {
-                    AutoAssignToMicroSplat(path, inputTex);
+                    AutoAssignToMicroSplat(path, normalPath, inputTex);
                 }
-                
-                EditorUtility.DisplayDialog("Success", $"Heightmap exported successfully to:\n{path}", "Awesome");
+
+                // Phase 1 (R5): persist the recipe sidecar so this depth work is re-editable later.
+                var savedRecipe = BuildRecipeFromUI();
+                if (_currentJob == null) _currentJob = new CPritch.DepthForge.Editor.Data.Job(inputTex);
+                _currentJob.recipe = savedRecipe;
+                _currentJob.state = CPritch.DepthForge.Editor.Data.JobState.Exported;
+                CPritch.DepthForge.Editor.Data.RecipeSidecar.Save(inputTex, savedRecipe);
+                // Cache the raw (pre-adjustment) depth so revisiting this source restores an
+                // editable result without re-running inference.
+                CPritch.DepthForge.Editor.Data.RawCache.SaveRaw(inputTex, _rawHeightmap);
+
+                string message = normalPath != null
+                    ? $"Heightmap exported to:\n{path}\n\nNormal map exported to:\n{normalPath}"
+                    : $"Heightmap exported successfully to:\n{path}";
+                EditorUtility.DisplayDialog("Success", message, "Awesome");
             }
         }
 
@@ -983,7 +1163,7 @@ namespace CPritch.DepthForge.Editor
             return null;
         }
 
-        private void AutoAssignToMicroSplat(string heightmapPath, Texture2D sourceDiffuse)
+        private void AutoAssignToMicroSplat(string heightmapPath, string normalPath, Texture2D sourceDiffuse)
         {
             string[] guids = AssetDatabase.FindAssets("t:JBooth.MicroSplat.TextureArrayConfig");
             if (guids == null || guids.Length == 0)
@@ -1003,6 +1183,10 @@ namespace CPritch.DepthForge.Editor
                 Debug.LogError($"[DepthForge] Failed to load generated heightmap at: {heightmapPath}");
                 return;
             }
+
+            Texture2D normalTex = string.IsNullOrEmpty(normalPath)
+                ? null
+                : AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
 
             bool assignedAny = false;
 
@@ -1041,6 +1225,18 @@ namespace CPritch.DepthForge.Editor
                             configChanged = true;
                             assignedAny = true;
                             Debug.Log($"[DepthForge] Auto-assigned heightmap to MicroSplat Config '{config.name}' for diffuse texture '{sourceDiffuse.name}'");
+                        }
+
+                        if (normalTex != null)
+                        {
+                            var normalField = entryType.GetField("normal");
+                            if (normalField != null)
+                            {
+                                normalField.SetValue(entry, normalTex);
+                                configChanged = true;
+                                assignedAny = true;
+                                Debug.Log($"[DepthForge] Auto-assigned normal map to MicroSplat Config '{config.name}' for diffuse texture '{sourceDiffuse.name}'");
+                            }
                         }
                     }
                 }

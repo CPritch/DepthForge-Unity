@@ -13,6 +13,8 @@
             <ui:Label text="Inference Settings" class="section-header" />
             <ui:EnumField name="modelSizeField" label="Model Size" />
             <ui:EnumField name="backendField" label="Inference Backend" />
+            <ui:Toggle name="tiledInferenceToggle" label="Use Tiled Inference (Experimental)" value="false" />
+            <ui:EnumField name="tilingAlignmentField" label="Tiling Alignment" />
         </ui:VisualElement>
 
         <ui:VisualElement class="section">
@@ -20,12 +22,15 @@
             <ui:Slider name="strengthSlider" label="3D Preview Strength" start-value="0.1" end-value="3.0" value="1.0" />
             <ui:Slider name="contrastSlider" label="Contrast" start-value="0.1" end-value="3.0" value="1.0" />
             <ui:Slider name="midpointSlider" label="Midpoint" start-value="0.0" end-value="1.0" value="0.5" />
+            <ui:Slider name="flattenSlider" label="Flatten Shape (High-Pass)" start-value="0.0" end-value="1.0" value="0.0" />
             <ui:Toggle name="invertToggle" label="Invert Heightmap" value="true" />
         </ui:VisualElement>
 
         <ui:VisualElement class="section">
             <ui:Label text="Export &amp; Integration Settings" class="section-header" />
             <ui:EnumField name="outputFormatField" label="Export Format" />
+            <ui:Toggle name="exportNormalToggle" label="Also Generate Normal Map" value="true" />
+            <ui:Slider name="normalStrengthSlider" label="Normal Strength" start-value="1.0" end-value="20.0" value="8.0" />
             <ui:Toggle name="autoAssignToggle" label="Auto-Assign to MicroSplat" value="true" />
             <ui:Label name="microSplatStatusLabel" text="Checking for MicroSplat..." class="status-label" />
         </ui:VisualElement>

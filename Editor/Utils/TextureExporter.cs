@@ -42,7 +42,12 @@ namespace CPritch.DepthForge.Editor.Utils
             byte[] bytes;
             if (format == ExportFormat.EXR_16Bit)
             {
-                bytes = ImageConversion.EncodeToEXR(generatedTexture, Texture2D.EXRFlags.CompressZIP);
+                // Unity's EncodeToEXR fails or outputs flat black if the texture is not an HDR format
+                Texture2D hdrTex = new Texture2D(generatedTexture.width, generatedTexture.height, TextureFormat.RGBAHalf, false, true);
+                hdrTex.SetPixels(generatedTexture.GetPixels());
+                hdrTex.Apply();
+                bytes = ImageConversion.EncodeToEXR(hdrTex, Texture2D.EXRFlags.CompressZIP);
+                UnityEngine.Object.DestroyImmediate(hdrTex);
             }
             else
             {
@@ -65,6 +70,46 @@ namespace CPritch.DepthForge.Editor.Utils
             }
 
             Debug.Log($"Heightmap saved to: {savePath}");
+            return savePath;
+        }
+
+        /// <summary>
+        /// Saves a generated normal map next to the source texture as "&lt;name&gt;_Normal.png" and
+        /// configures its importer as a proper Unity NormalMap (linear, mip-mapped). This gives
+        /// MicroSplat real normal data instead of having it synthesize normals from the diffuse.
+        /// </summary>
+        public static string SaveNormalMap(Texture2D normalTexture, Texture2D sourceTexture)
+        {
+            if (normalTexture == null || sourceTexture == null)
+            {
+                Debug.LogError("Cannot save normal map: texture is null.");
+                return null;
+            }
+
+            string sourcePath = AssetDatabase.GetAssetPath(sourceTexture);
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                Debug.LogError("Source texture is not saved in the project.");
+                return null;
+            }
+
+            string directory = Path.GetDirectoryName(sourcePath);
+            string filename = Path.GetFileNameWithoutExtension(sourcePath) + "_Normal";
+            string savePath = Path.Combine(directory, filename + ".png").Replace("\\", "/");
+
+            byte[] bytes = ImageConversion.EncodeToPNG(normalTexture);
+            File.WriteAllBytes(savePath, bytes);
+            AssetDatabase.Refresh();
+
+            TextureImporter importer = AssetImporter.GetAtPath(savePath) as TextureImporter;
+            if (importer != null)
+            {
+                importer.textureType = TextureImporterType.NormalMap; // forces linear + correct sampling
+                importer.mipmapEnabled = true;
+                importer.SaveAndReimport();
+            }
+
+            Debug.Log($"Normal map saved to: {savePath}");
             return savePath;
         }
     }
