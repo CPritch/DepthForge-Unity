@@ -112,5 +112,44 @@ namespace CPritch.DepthForge.Editor.Utils
             Debug.Log($"Normal map saved to: {savePath}");
             return savePath;
         }
+
+        /// <summary>
+        /// Saves a generated ambient-occlusion map next to the source as "&lt;name&gt;_AO.png" and
+        /// configures its importer as linear, mip-mapped grayscale.
+        /// </summary>
+        public static string SaveAOMap(Texture2D aoTexture, Texture2D sourceTexture)
+        {
+            if (aoTexture == null || sourceTexture == null)
+            {
+                Debug.LogError("Cannot save AO map: texture is null.");
+                return null;
+            }
+
+            string sourcePath = AssetDatabase.GetAssetPath(sourceTexture);
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                Debug.LogError("Source texture is not saved in the project.");
+                return null;
+            }
+
+            string directory = Path.GetDirectoryName(sourcePath);
+            string filename = Path.GetFileNameWithoutExtension(sourcePath) + "_AO";
+            string savePath = Path.Combine(directory, filename + ".png").Replace("\\", "/");
+
+            byte[] bytes = ImageConversion.EncodeToPNG(aoTexture);
+            File.WriteAllBytes(savePath, bytes);
+            AssetDatabase.Refresh();
+
+            TextureImporter importer = AssetImporter.GetAtPath(savePath) as TextureImporter;
+            if (importer != null)
+            {
+                importer.sRGBTexture = false; // AO is linear data
+                importer.mipmapEnabled = true;
+                importer.SaveAndReimport();
+            }
+
+            Debug.Log($"AO map saved to: {savePath}");
+            return savePath;
+        }
     }
 }

@@ -135,10 +135,13 @@ namespace CPritch.DepthForge.Editor
         private Slider _midpointSlider;
         private Slider _flattenSlider;
         private Slider _normalStrengthSlider;
+        private Slider _aoStrengthSlider;
         private Toggle _invertToggle;
         private Toggle _exportNormalToggle;
+        private Toggle _exportAOToggle;
         private Toggle _autoAssignToggle;
         private Toggle _tiledInferenceToggle;
+        private Toggle _letterboxToggle;
         private EnumField _tilingAlignmentField;
         private Toggle _texturedPreviewToggle;
         private Label _microSplatStatusLabel;
@@ -271,6 +274,7 @@ namespace CPritch.DepthForge.Editor
             _flattenSlider = root.Q<Slider>("flattenSlider");
             _invertToggle = root.Q<Toggle>("invertToggle");
             _tiledInferenceToggle = root.Q<Toggle>("tiledInferenceToggle");
+            _letterboxToggle = root.Q<Toggle>("letterboxToggle");
             _tilingAlignmentField = root.Q<EnumField>("tilingAlignmentField");
 
             if (_tilingAlignmentField != null)
@@ -304,6 +308,14 @@ namespace CPritch.DepthForge.Editor
             {
                 _normalStrengthSlider.SetEnabled(_exportNormalToggle.value);
                 _exportNormalToggle.RegisterValueChangedCallback(evt => _normalStrengthSlider.SetEnabled(evt.newValue));
+            }
+
+            _exportAOToggle = root.Q<Toggle>("exportAOToggle");
+            _aoStrengthSlider = root.Q<Slider>("aoStrengthSlider");
+            if (_exportAOToggle != null && _aoStrengthSlider != null)
+            {
+                _aoStrengthSlider.SetEnabled(_exportAOToggle.value);
+                _exportAOToggle.RegisterValueChangedCallback(evt => _aoStrengthSlider.SetEnabled(evt.newValue));
             }
 
             // Tabs & Preview
@@ -739,7 +751,8 @@ namespace CPritch.DepthForge.Editor
                 DepthInferenceRunner.TilingAlignment tilingAlignment = _tilingAlignmentField != null ? 
                     (DepthInferenceRunner.TilingAlignment)_tilingAlignmentField.value : 
                     DepthInferenceRunner.TilingAlignment.LinearRegressionDownscaled;
-                Texture2D resultTex = _runner.Execute(inputTex, targetSize, useTiling, tilingAlignment);
+                bool letterbox = _letterboxToggle != null ? _letterboxToggle.value : true;
+                Texture2D resultTex = _runner.Execute(inputTex, targetSize, useTiling, tilingAlignment, letterbox);
 
                 if (resultTex != null)
                 {
@@ -805,6 +818,7 @@ namespace CPritch.DepthForge.Editor
             if (_modelSizeField != null) r.modelSize = (CPritch.DepthForge.Editor.Data.DepthModelSize)(int)(ModelSize)_modelSizeField.value;
             if (_backendField != null) r.backend = (CPritch.DepthForge.Editor.Data.InferenceBackendChoice)(int)(InferenceBackend)_backendField.value;
             if (_tiledInferenceToggle != null) r.tiledInference = _tiledInferenceToggle.value;
+            if (_letterboxToggle != null) r.letterbox = _letterboxToggle.value;
             if (_tilingAlignmentField != null) r.tilingAlignment = (CPritch.DepthForge.Editor.Data.TilingAlignment)(int)(TilingAlignment)_tilingAlignmentField.value;
             if (_invertToggle != null) r.invert = _invertToggle.value;
             if (_contrastSlider != null) r.contrast = _contrastSlider.value;
@@ -812,6 +826,8 @@ namespace CPritch.DepthForge.Editor
             if (_flattenSlider != null) r.flatten = _flattenSlider.value;
             if (_exportNormalToggle != null) r.exportNormal = _exportNormalToggle.value;
             if (_normalStrengthSlider != null) r.normalStrength = _normalStrengthSlider.value;
+            if (_exportAOToggle != null) r.exportAO = _exportAOToggle.value;
+            if (_aoStrengthSlider != null) r.aoStrength = _aoStrengthSlider.value;
             if (_outputFormatField != null) r.format = (CPritch.DepthForge.Editor.Utils.TextureExporter.ExportFormat)_outputFormatField.value;
             if (_autoAssignToggle != null) r.autoAssignMicroSplat = _autoAssignToggle.value;
             // AO fields + preview-only strength are intentionally not bound here yet (AO = Phase 2).
@@ -824,6 +840,7 @@ namespace CPritch.DepthForge.Editor
             if (_modelSizeField != null) _modelSizeField.SetValueWithoutNotify((ModelSize)(int)r.modelSize);
             if (_backendField != null) _backendField.SetValueWithoutNotify((InferenceBackend)(int)r.backend);
             if (_tiledInferenceToggle != null) _tiledInferenceToggle.SetValueWithoutNotify(r.tiledInference);
+            if (_letterboxToggle != null) _letterboxToggle.SetValueWithoutNotify(r.letterbox);
             if (_tilingAlignmentField != null)
             {
                 _tilingAlignmentField.SetValueWithoutNotify((TilingAlignment)(int)r.tilingAlignment);
@@ -838,6 +855,12 @@ namespace CPritch.DepthForge.Editor
             {
                 _normalStrengthSlider.SetValueWithoutNotify(r.normalStrength);
                 _normalStrengthSlider.SetEnabled(r.exportNormal);
+            }
+            if (_exportAOToggle != null) _exportAOToggle.SetValueWithoutNotify(r.exportAO);
+            if (_aoStrengthSlider != null)
+            {
+                _aoStrengthSlider.SetValueWithoutNotify(r.aoStrength);
+                _aoStrengthSlider.SetEnabled(r.exportAO);
             }
             if (_outputFormatField != null) _outputFormatField.SetValueWithoutNotify(r.format);
             // Refresh the derived preview only if a heightmap already exists for this source.
@@ -1082,6 +1105,22 @@ namespace CPritch.DepthForge.Editor
                     }
                 }
 
+                // Optionally derive an ambient-occlusion map from the same adjusted heightmap so the
+                // exported map set (Height + Normal + AO) is complete and consistent.
+                string aoPath = null;
+                bool exportAO = _exportAOToggle != null && _exportAOToggle.value;
+                if (exportAO)
+                {
+                    float aoStrength = _aoStrengthSlider != null ? _aoStrengthSlider.value : 1f;
+                    float aoRadius = _currentJob != null ? _currentJob.recipe.aoRadius : 0.02f;
+                    Texture2D aoTex = ImageProcessor.GenerateAO(_adjustedHeightmap, aoStrength, aoRadius);
+                    if (aoTex != null)
+                    {
+                        aoPath = CPritch.DepthForge.Editor.Utils.TextureExporter.SaveAOMap(aoTex, inputTex);
+                        DestroyImmediate(aoTex);
+                    }
+                }
+
                 bool autoAssign = _autoAssignToggle != null ? _autoAssignToggle.value : false;
                 if (autoAssign && IsMicroSplatPresent())
                 {
@@ -1098,9 +1137,9 @@ namespace CPritch.DepthForge.Editor
                 // editable result without re-running inference.
                 CPritch.DepthForge.Editor.Data.RawCache.SaveRaw(inputTex, _rawHeightmap);
 
-                string message = normalPath != null
-                    ? $"Heightmap exported to:\n{path}\n\nNormal map exported to:\n{normalPath}"
-                    : $"Heightmap exported successfully to:\n{path}";
+                string message = $"Heightmap exported to:\n{path}";
+                if (normalPath != null) message += $"\n\nNormal map:\n{normalPath}";
+                if (aoPath != null) message += $"\n\nAO map:\n{aoPath}";
                 EditorUtility.DisplayDialog("Success", message, "Awesome");
             }
         }

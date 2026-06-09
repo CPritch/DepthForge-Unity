@@ -25,6 +25,7 @@ namespace CPritch.DepthForge.Editor.Data
         public InferenceBackendChoice backend = InferenceBackendChoice.Auto;
         public bool tiledInference = false;
         public TilingAlignment tilingAlignment = TilingAlignment.LinearRegressionDownscaled;
+        public bool letterbox = true;   // R9 — single-pass: pad to square (even scaling) instead of squashing
 
         // Adjustments (affect the exported height)
         public bool invert = true;
@@ -35,7 +36,7 @@ namespace CPritch.DepthForge.Editor.Data
         // Maps
         public bool exportNormal = true;
         public float normalStrength = 8f;
-        public bool exportAO = false;   // R4 / Phase 2 — field present now, generation lands later
+        public bool exportAO = true;    // R4 — part of the complete H+N+AO launch map set
         public float aoStrength = 1f;
         public float aoRadius = 0.02f;
 

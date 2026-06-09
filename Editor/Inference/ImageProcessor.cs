@@ -240,6 +240,96 @@ namespace CPritch.DepthForge.Editor.Inference
         }
 
         /// <summary>
+        /// Generates a horizon-based ambient-occlusion map from a (grayscale) heightmap. For each
+        /// pixel it marches a set of directions, tracks the steepest horizon, and darkens crevices
+        /// accordingly. Output is linear, mip-mapped grayscale. Feed it the adjusted heightmap so the
+        /// AO matches the exported height.
+        /// </summary>
+        /// <param name="height">Grayscale heightmap (height read from the red channel).</param>
+        /// <param name="strength">Occlusion strength / relief scale. ~0-3.</param>
+        /// <param name="radius">Sampling radius as a fraction of the largest image dimension. ~0.005-0.1.</param>
+        public static Texture2D GenerateAO(Texture2D height, float strength, float radius)
+        {
+            if (height == null) return null;
+
+            int w = height.width;
+            int h = height.height;
+
+            Color32[] src = height.GetPixels32();
+            float[] hv = new float[w * h];
+            for (int i = 0; i < src.Length; i++)
+            {
+                hv[i] = src[i].r / 255f;
+            }
+
+            Texture2D ao = new Texture2D(w, h, TextureFormat.RGB24, true, true); // linear, mip-mapped
+            Color32[] outPixels = new Color32[w * h];
+
+            const int dirs = 8;
+            const int steps = 6;
+            int maxDim = Mathf.Max(w, h);
+            float maxDist = Mathf.Max(2f, radius * maxDim);
+            // Scale height (0..1) into pixel units so slope is comparable to horizontal distance.
+            float heightScale = strength * maxDist;
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    float hP = hv[y * w + x];
+                    float occ = 0f;
+
+                    for (int d = 0; d < dirs; d++)
+                    {
+                        float ang = (Mathf.PI * 2f) * d / dirs;
+                        float dx = Mathf.Cos(ang);
+                        float dy = Mathf.Sin(ang);
+
+                        float maxSlope = 0f;
+                        for (int s = 1; s <= steps; s++)
+                        {
+                            float dist = maxDist * s / steps;
+                            float hs = SampleBilinearClamped(hv, w, h, x + dx * dist, y + dy * dist);
+                            float slope = (hs - hP) * heightScale / dist;
+                            if (slope > maxSlope) maxSlope = slope;
+                        }
+
+                        // Steepest slope -> sine of the horizon angle = directional occlusion.
+                        occ += maxSlope / Mathf.Sqrt(maxSlope * maxSlope + 1f);
+                    }
+
+                    occ /= dirs;
+                    float aoVal = Mathf.Clamp01(1f - occ);
+                    byte g = (byte)Mathf.Clamp(aoVal * 255f, 0f, 255f);
+                    outPixels[y * w + x] = new Color32(g, g, g, 255);
+                }
+            }
+
+            ao.SetPixels32(outPixels);
+            ao.Apply();
+            return ao;
+        }
+
+        private static float SampleBilinearClamped(float[] hv, int w, int h, float x, float y)
+        {
+            x = Mathf.Clamp(x, 0f, w - 1f);
+            y = Mathf.Clamp(y, 0f, h - 1f);
+            int x0 = Mathf.FloorToInt(x);
+            int y0 = Mathf.FloorToInt(y);
+            int x1 = Mathf.Min(x0 + 1, w - 1);
+            int y1 = Mathf.Min(y0 + 1, h - 1);
+            float fx = x - x0;
+            float fy = y - y0;
+
+            float v00 = hv[y0 * w + x0];
+            float v01 = hv[y0 * w + x1];
+            float v10 = hv[y1 * w + x0];
+            float v11 = hv[y1 * w + x1];
+
+            return (1f - fy) * ((1f - fx) * v00 + fx * v01) + fy * ((1f - fx) * v10 + fx * v11);
+        }
+
+        /// <summary>
         /// Highly performant O(W * H) sliding-window box blur on a 1D float array.
         /// </summary>
         private static float[] BoxBlur(float[] src, int w, int h, int radius)

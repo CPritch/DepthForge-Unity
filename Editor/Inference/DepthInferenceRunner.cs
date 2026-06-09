@@ -53,7 +53,7 @@ namespace CPritch.DepthForge.Editor.Inference
             LinearRegressionDownscaled
         }
 
-        public Texture2D Execute(Texture2D inputTexture, int targetSize = 518, bool useTiling = true, TilingAlignment alignmentStrategy = TilingAlignment.LinearRegressionDownscaled)
+        public Texture2D Execute(Texture2D inputTexture, int targetSize = 518, bool useTiling = true, TilingAlignment alignmentStrategy = TilingAlignment.LinearRegressionDownscaled, bool letterbox = true)
         {
             if (!IsInitialized)
             {
@@ -65,11 +65,23 @@ namespace CPritch.DepthForge.Editor.Inference
             int H = inputTexture.height;
             int T = 518; // Standard tile size for Depth Anything V3 ONNX
 
-            // If the texture fits within a single tile, or tiling is disabled, run single-pass inference
-            if ((W <= T && H <= T) || !useTiling)
+            // Tiling crops fixed T×T tiles, so it needs BOTH dimensions to be at least one full tile.
+            // When either side is smaller than a tile (e.g. a 1024x512 texture), a T×T crop runs off
+            // the image edge — CropTextureCPU's bottomY goes negative and the guide indexing goes
+            // out of bounds — which produced the "breaks on some aspect ratios" failures. Fall back
+            // to single-pass inference in that case (and when tiling is disabled / both sides fit one tile).
+            if (!useTiling || W < T || H < T)
             {
                 try
                 {
+                    // Letterbox: pad the (non-square) image to a square tile preserving aspect, so
+                    // the model sees even scaling instead of a squashed image. Square images need no
+                    // padding and use the direct resize path.
+                    if (letterbox && W != H)
+                    {
+                        return ExecuteLetterboxed(inputTexture, W, H, T);
+                    }
+
                     using Tensor<float> inputTensor = ImageProcessor.PreprocessTexture(inputTexture, T, T, _inputRank);
                     _worker.Schedule(inputTensor);
                     Tensor<float> outputTensor = _worker.PeekOutput() as Tensor<float>;
@@ -78,7 +90,7 @@ namespace CPritch.DepthForge.Editor.Inference
                 catch (Exception) when (_backend == BackendType.GPUCompute)
                 {
                     FallbackToCPU();
-                    return Execute(inputTexture, targetSize, useTiling, alignmentStrategy);
+                    return Execute(inputTexture, targetSize, useTiling, alignmentStrategy, letterbox);
                 }
             }
 
@@ -140,7 +152,7 @@ namespace CPritch.DepthForge.Editor.Inference
             {
                 UnityEngine.Object.DestroyImmediate(globalTex);
                 FallbackToCPU();
-                return Execute(inputTexture, targetSize, useTiling, alignmentStrategy);
+                return Execute(inputTexture, targetSize, useTiling, alignmentStrategy, letterbox);
             }
 
             UnityEngine.Object.DestroyImmediate(globalTex);
@@ -344,7 +356,7 @@ namespace CPritch.DepthForge.Editor.Inference
             {
                 UnityEngine.Object.DestroyImmediate(tileTex);
                 FallbackToCPU();
-                return Execute(inputTexture, targetSize, useTiling, alignmentStrategy);
+                return Execute(inputTexture, targetSize, useTiling, alignmentStrategy, letterbox);
             }
 
             UnityEngine.Object.DestroyImmediate(tileTex);
@@ -392,6 +404,104 @@ namespace CPritch.DepthForge.Editor.Inference
             outTex.SetPixels32(colors);
             outTex.Apply();
 
+            return outTex;
+        }
+
+        /// <summary>
+        /// Single-pass inference that preserves aspect ratio: the image is scaled to fit a T×T tile
+        /// (aspect-correct), centered, with its edges replicated into the padding (so the model does
+        /// not see a hard black border), run once, then the valid region is cropped back out and
+        /// resized to the original W×H.
+        /// </summary>
+        private Texture2D ExecuteLetterboxed(Texture2D inputTexture, int W, int H, int T)
+        {
+            int maxDim = Mathf.Max(W, H);
+            float scale = (float)T / maxDim;
+            int drawW = Mathf.Clamp(Mathf.RoundToInt(W * scale), 1, T);
+            int drawH = Mathf.Clamp(Mathf.RoundToInt(H * scale), 1, T);
+            int drawX = (T - drawW) / 2;
+            int drawY = (T - drawH) / 2; // bottom-up
+
+            // Build the letterboxed T×T input (edge-replicated padding).
+            Texture2D padded = new Texture2D(T, T, TextureFormat.RGB24, false, true);
+            Color[] pix = new Color[T * T];
+            for (int y = 0; y < T; y++)
+            {
+                int yy = Mathf.Clamp(y - drawY, 0, drawH - 1);
+                float v = drawH > 1 ? (float)yy / (drawH - 1) : 0f;
+                for (int x = 0; x < T; x++)
+                {
+                    int xx = Mathf.Clamp(x - drawX, 0, drawW - 1);
+                    float u = drawW > 1 ? (float)xx / (drawW - 1) : 0f;
+                    pix[y * T + x] = inputTexture.GetPixelBilinear(u, v);
+                }
+            }
+            padded.SetPixels(pix);
+            padded.Apply();
+
+            float[] outData;
+            try
+            {
+                using Tensor<float> input = ImageProcessor.PreprocessTexture(padded, T, T, _inputRank);
+                _worker.Schedule(input);
+                Tensor<float> output = _worker.PeekOutput() as Tensor<float>;
+                outData = output.DownloadToArray(); // T*T, top-down (NN origin)
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(padded);
+            }
+
+            // Extract the valid (aspect-correct) region from the padded output. Tensor is top-down,
+            // drawY is a bottom-up offset, so the region's top row in tensor space is T - drawY - drawH.
+            int tensorTopY = T - drawY - drawH;
+            float[] region = new float[drawW * drawH];
+            float minV = float.MaxValue, maxV = float.MinValue;
+            for (int y = 0; y < drawH; y++)
+            {
+                for (int x = 0; x < drawW; x++)
+                {
+                    float val = outData[(tensorTopY + y) * T + (drawX + x)];
+                    region[y * drawW + x] = val;
+                    if (float.IsNaN(val) || float.IsInfinity(val)) continue;
+                    if (val < minV) minV = val;
+                    if (val > maxV) maxV = val;
+                }
+            }
+            float range = maxV - minV;
+            if (range < 1e-5f) range = 1e-5f;
+
+            // Resize the region (drawW×drawH, top-down) to W×H, flipping Y to texture bottom-up, and normalize.
+            Texture2D outTex = new Texture2D(W, H, TextureFormat.RGB24, false, true);
+            Color32[] colors = new Color32[W * H];
+            float divW = W > 1 ? W - 1 : 1f;
+            float divH = H > 1 ? H - 1 : 1f;
+            for (int y = 0; y < H; y++)
+            {
+                float gy = (1f - y / divH) * (drawH - 1); // y=0 (bottom) -> region bottom row
+                int y0 = Mathf.FloorToInt(gy);
+                int y1 = Mathf.Min(y0 + 1, drawH - 1);
+                float fy = gy - y0;
+
+                for (int x = 0; x < W; x++)
+                {
+                    float gx = x / divW * (drawW - 1);
+                    int x0 = Mathf.FloorToInt(gx);
+                    int x1 = Mathf.Min(x0 + 1, drawW - 1);
+                    float fx = gx - x0;
+
+                    float v00 = region[y0 * drawW + x0];
+                    float v01 = region[y0 * drawW + x1];
+                    float v10 = region[y1 * drawW + x0];
+                    float v11 = region[y1 * drawW + x1];
+                    float val = (1f - fy) * ((1f - fx) * v00 + fx * v01) + fy * ((1f - fx) * v10 + fx * v11);
+
+                    byte g = (byte)Mathf.Clamp((val - minV) / range * 255f, 0f, 255f);
+                    colors[y * W + x] = new Color32(g, g, g, 255);
+                }
+            }
+            outTex.SetPixels32(colors);
+            outTex.Apply();
             return outTex;
         }
 
