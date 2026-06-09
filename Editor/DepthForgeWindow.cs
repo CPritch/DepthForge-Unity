@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -158,6 +159,15 @@ namespace CPritch.DepthForge.Editor
         private Button _saveButton;
         private Button _previewMeshButton;
         private ProgressBar _progressBar;
+
+        // Batch queue (R2)
+        private List<CPritch.DepthForge.Editor.Data.Job> _queue = new List<CPritch.DepthForge.Editor.Data.Job>();
+        private ListView _queueListView;
+        private Button _addToQueueButton;
+        private Button _clearQueueButton;
+        private Button _batchGenerateButton;
+        private Label _batchStatusLabel;
+        private BatchProcessor _batch;
 
         // Downloader
         private DownloadHandle _downloadHandle;
@@ -482,6 +492,35 @@ namespace CPritch.DepthForge.Editor
             if (_saveButton != null) _saveButton.clicked += OnSaveClicked;
             if (_previewMeshButton != null) _previewMeshButton.clicked += OnPreviewMeshClicked;
 
+            // Batch queue (R2)
+            _addToQueueButton = root.Q<Button>("addToQueueButton");
+            _clearQueueButton = root.Q<Button>("clearQueueButton");
+            _batchGenerateButton = root.Q<Button>("batchGenerateButton");
+            _batchStatusLabel = root.Q<Label>("batchStatusLabel");
+            _queueListView = root.Q<ListView>("queueListView");
+            if (_queueListView != null)
+            {
+                _queueListView.fixedItemHeight = 20;
+                _queueListView.itemsSource = _queue;
+                _queueListView.makeItem = () => new Label();
+                _queueListView.bindItem = (e, i) =>
+                {
+                    var job = _queue[i];
+                    string name = job.source != null ? job.source.name : "(missing)";
+                    string status = job.state.ToString();
+                    if (job.state == CPritch.DepthForge.Editor.Data.JobState.Error && !string.IsNullOrEmpty(job.error))
+                    {
+                        status += $": {job.error}";
+                    }
+                    ((Label)e).text = $"{name}  —  {status}";
+                };
+                _queueListView.style.minHeight = 80;
+            }
+            if (_addToQueueButton != null) _addToQueueButton.clicked += AddSelectionToQueue;
+            if (_clearQueueButton != null) _clearQueueButton.clicked += ClearQueue;
+            if (_batchGenerateButton != null) _batchGenerateButton.clicked += StartBatch;
+            UpdateBatchStatus();
+
             // Bind the IMGUI viewport rendering
             if (_outputPreview3D != null)
             {
@@ -717,67 +756,212 @@ namespace CPritch.DepthForge.Editor
 
         private void RunInference(Texture2D inputTex, ModelAsset modelAsset)
         {
-            try
+            ModelSize selectedSize = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
+            InferenceBackend selectedBackend = _backendField != null ? (InferenceBackend)_backendField.value : InferenceBackend.Auto;
+
+            BackendType backend = BackendType.GPUCompute;
+            if (selectedBackend == InferenceBackend.CPUBurst)
             {
-                EditorUtility.DisplayProgressBar("DepthForge", "Initializing Inference Engine...", 0.2f);
-                
-                ModelSize selectedSize = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
-                InferenceBackend selectedBackend = _backendField != null ? (InferenceBackend)_backendField.value : InferenceBackend.Auto;
-                
-                BackendType backend = BackendType.GPUCompute;
-                if (selectedBackend == InferenceBackend.CPUBurst)
+                backend = BackendType.CPU;
+            }
+            else if (selectedBackend == InferenceBackend.Auto)
+            {
+                if (selectedSize == ModelSize.Base || selectedSize == ModelSize.Large)
                 {
                     backend = BackendType.CPU;
                 }
-                else if (selectedBackend == InferenceBackend.Auto)
+                else
                 {
-                    if (selectedSize == ModelSize.Base || selectedSize == ModelSize.Large)
-                    {
-                        backend = BackendType.CPU;
-                    }
-                    else
-                    {
-                        backend = BackendType.GPUCompute;
-                    }
+                    backend = BackendType.GPUCompute;
                 }
+            }
 
+            try
+            {
                 _runner.Initialize(modelAsset, backend);
-
-                EditorUtility.DisplayProgressBar("DepthForge", "Running Depth Inference...", 0.6f);
-                
-                int targetSize = 518;
-
-                bool useTiling = _tiledInferenceToggle != null ? _tiledInferenceToggle.value : false;
-                DepthInferenceRunner.TilingAlignment tilingAlignment = _tilingAlignmentField != null ? 
-                    (DepthInferenceRunner.TilingAlignment)_tilingAlignmentField.value : 
-                    DepthInferenceRunner.TilingAlignment.LinearRegressionDownscaled;
-                bool letterbox = _letterboxToggle != null ? _letterboxToggle.value : true;
-                Texture2D resultTex = _runner.Execute(inputTex, targetSize, useTiling, tilingAlignment, letterbox);
-
-                if (resultTex != null)
-                {
-                    if (_rawHeightmap != null)
-                    {
-                        DestroyImmediate(_rawHeightmap);
-                    }
-                    _rawHeightmap = resultTex;
-
-                    // Compute initial preview heightmap
-                    UpdateAdjustedHeightmap();
-
-                    // Enable editing actions
-                    SetActionButtonsEnabled(true);
-                }
             }
             catch (Exception ex)
             {
-                Debug.LogError($"Heightmap generation failed: {ex.Message}");
-                EditorUtility.DisplayDialog("Generation Error", $"An error occurred during heightmap generation:\n{ex.Message}", "OK");
+                Debug.LogError($"Inference init failed: {ex.Message}");
+                EditorUtility.DisplayDialog("Generation Error", $"Failed to initialize inference:\n{ex.Message}", "OK");
+                return;
             }
-            finally
+
+            int targetSize = 518;
+            bool useTiling = _tiledInferenceToggle != null ? _tiledInferenceToggle.value : false;
+            DepthInferenceRunner.TilingAlignment tilingAlignment = _tilingAlignmentField != null ?
+                (DepthInferenceRunner.TilingAlignment)_tilingAlignmentField.value :
+                DepthInferenceRunner.TilingAlignment.LinearRegressionDownscaled;
+            bool letterbox = _letterboxToggle != null ? _letterboxToggle.value : true;
+
+            // Non-blocking: the editor stays responsive while inference runs; results arrive via callback.
+            if (_generateButton != null)
             {
-                EditorUtility.ClearProgressBar();
+                _generateButton.SetEnabled(false);
+                _generateButton.text = "Generating...";
             }
+            if (_progressBar != null)
+            {
+                _progressBar.RemoveFromClassList("hidden");
+                _progressBar.value = 0f;
+                _progressBar.title = "Running depth inference...";
+            }
+
+            _runner.ExecuteAsync(inputTex, useTiling, tilingAlignment, letterbox,
+                progress =>
+                {
+                    if (_progressBar != null) _progressBar.value = progress;
+                },
+                result =>
+                {
+                    EndGeneratingUI();
+                    if (result != null)
+                    {
+                        if (_rawHeightmap != null) DestroyImmediate(_rawHeightmap);
+                        _rawHeightmap = result;
+                        UpdateAdjustedHeightmap();
+                        SetActionButtonsEnabled(true);
+                    }
+                    Repaint();
+                },
+                error =>
+                {
+                    EndGeneratingUI();
+                    Debug.LogError($"Heightmap generation failed: {error}");
+                    EditorUtility.DisplayDialog("Generation Error", $"An error occurred during heightmap generation:\n{error}", "OK");
+                    Repaint();
+                });
+        }
+
+        private void EndGeneratingUI()
+        {
+            if (_progressBar != null) _progressBar.AddToClassList("hidden");
+            if (_generateButton != null)
+            {
+                _generateButton.SetEnabled(true);
+                _generateButton.text = "Generate Heightmap";
+            }
+        }
+
+        // ---- Batch queue (R2) ---------------------------------------------------------------
+
+        private void AddSelectionToQueue()
+        {
+            int added = 0;
+            foreach (var obj in Selection.objects)
+            {
+                Texture2D tex = obj as Texture2D;
+                if (tex == null) continue;
+                if (_queue.Exists(j => j.source == tex)) continue;
+
+                var job = new CPritch.DepthForge.Editor.Data.Job(tex);
+                var recipe = CPritch.DepthForge.Editor.Data.RecipeSidecar.Load(tex);
+                if (recipe != null) job.recipe = recipe;
+                _queue.Add(job);
+                added++;
+            }
+
+            _queueListView?.RefreshItems();
+            UpdateBatchStatus();
+
+            if (added == 0)
+            {
+                EditorUtility.DisplayDialog("Add to Queue", "Select one or more Texture2D assets in the Project window first.", "OK");
+            }
+        }
+
+        private void ClearQueue()
+        {
+            if (_batch != null && _batch.IsRunning) return;
+            _queue.Clear();
+            _queueListView?.RefreshItems();
+            UpdateBatchStatus();
+        }
+
+        private void StartBatch()
+        {
+            if (_batch != null && _batch.IsRunning) return;
+            if (_queue.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Batch", "The queue is empty. Add some textures first.", "OK");
+                return;
+            }
+
+            ModelSize size = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
+            ModelAsset model = ResolveModelAsset(size);
+            if (model == null)
+            {
+                EditorUtility.DisplayDialog("Batch",
+                    "The selected model isn't downloaded yet. Run a single Generate once to download it, then batch.",
+                    "OK");
+                return;
+            }
+
+            InferenceBackend backendChoice = _backendField != null ? (InferenceBackend)_backendField.value : InferenceBackend.Auto;
+            BackendType backend = ResolveBackend(size, backendChoice);
+
+            _batchGenerateButton?.SetEnabled(false);
+            _generateButton?.SetEnabled(false);
+
+            _batch = new BatchProcessor(_runner, _queue, model, backend,
+                job =>
+                {
+                    _queueListView?.RefreshItems();
+                    UpdateBatchStatus();
+                    Repaint();
+                },
+                (completed, total) =>
+                {
+                    if (_batchStatusLabel != null) _batchStatusLabel.text = $"Processing {completed}/{total}…";
+                    Repaint();
+                },
+                () =>
+                {
+                    _batchGenerateButton?.SetEnabled(true);
+                    _generateButton?.SetEnabled(true);
+                    _queueListView?.RefreshItems();
+                    UpdateBatchStatus();
+                    AssetDatabase.Refresh();
+                    Repaint();
+                });
+            _batch.Start();
+        }
+
+        private void UpdateBatchStatus()
+        {
+            if (_batchStatusLabel == null) return;
+            if (_queue.Count == 0) { _batchStatusLabel.text = "Queue empty."; return; }
+
+            int done = _queue.FindAll(j => j.state == CPritch.DepthForge.Editor.Data.JobState.Exported).Count;
+            int errors = _queue.FindAll(j => j.state == CPritch.DepthForge.Editor.Data.JobState.Error).Count;
+            _batchStatusLabel.text = $"{_queue.Count} queued · {done} done" + (errors > 0 ? $" · {errors} failed" : "");
+        }
+
+        private ModelAsset ResolveModelAsset(ModelSize size)
+        {
+            string modelPath = MODEL_SMALL_PATH;
+            if (size == ModelSize.Base) modelPath = MODEL_BASE_PATH;
+            else if (size == ModelSize.Large) modelPath = MODEL_LARGE_PATH;
+
+            if (!File.Exists(modelPath)) return null;
+
+            ModelAsset asset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
+            if (asset == null)
+            {
+                AssetDatabase.ImportAsset(modelPath);
+                asset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
+            }
+            return asset;
+        }
+
+        private BackendType ResolveBackend(ModelSize size, InferenceBackend choice)
+        {
+            if (choice == InferenceBackend.CPUBurst) return BackendType.CPU;
+            if (choice == InferenceBackend.Auto)
+            {
+                return (size == ModelSize.Base || size == ModelSize.Large) ? BackendType.CPU : BackendType.GPUCompute;
+            }
+            return BackendType.GPUCompute;
         }
 
         private void UpdateAdjustedHeightmap()

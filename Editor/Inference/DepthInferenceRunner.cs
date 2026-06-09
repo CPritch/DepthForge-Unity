@@ -1,6 +1,8 @@
 using UnityEngine;
+using UnityEditor;
 using System;
 using System.IO;
+using System.Collections;
 using System.Collections.Generic;
 using Unity.InferenceEngine;
 
@@ -12,8 +14,23 @@ namespace CPritch.DepthForge.Editor.Inference
         private Worker _worker;
         private int _inputRank = 4;
         private BackendType _backend = BackendType.GPUCompute;
-        
+
+        // --- Async (non-blocking) single-pass state, pumped off EditorApplication.update ---
+        private enum AsyncPhase { Idle, Scheduling, Readback }
+        private AsyncPhase _asyncPhase = AsyncPhase.Idle;
+        private bool _asyncRunning;
+        private IEnumerator _asyncSchedule;
+        private Tensor<float> _asyncInput;
+        private Tensor<float> _asyncOutput;
+        private Func<Tensor<float>, Texture2D> _asyncPostprocess;
+        private Action<float> _asyncProgress;
+        private Action<Texture2D> _asyncComplete;
+        private Action<string> _asyncError;
+        private int _asyncStepCount;
+        private const double AsyncBudgetMs = 6.0;
+
         public bool IsInitialized => _worker != null;
+        public bool IsBusy => _asyncRunning;
 
         public void Initialize(ModelAsset modelAsset, BackendType backend = BackendType.GPUCompute)
         {
@@ -614,8 +631,145 @@ namespace CPritch.DepthForge.Editor.Inference
             dest.Apply();
         }
 
+        /// <summary>
+        /// Non-blocking inference. The default single-pass (square / letterbox-off) path runs
+        /// cooperatively off EditorApplication.update so the editor stays responsive; results arrive
+        /// via <paramref name="onComplete"/>. The tiled path and letterboxed non-square path are not
+        /// cooperative yet, so they run synchronously here and report completion immediately.
+        /// </summary>
+        public void ExecuteAsync(Texture2D inputTexture, bool useTiling, TilingAlignment alignment, bool letterbox,
+                                 Action<float> onProgress, Action<Texture2D> onComplete, Action<string> onError)
+        {
+            if (!IsInitialized) { onError?.Invoke("DepthInferenceRunner is not initialized."); return; }
+            if (_asyncRunning) { onError?.Invoke("An inference run is already in progress."); return; }
+
+            int W = inputTexture.width;
+            int H = inputTexture.height;
+            int T = 518;
+
+            // Paths that aren't cooperative yet run synchronously and report completion:
+            //  - tiled (experimental, off by default)
+            //  - letterboxed non-square (CPU-bound pad + resize)
+            bool tiled = useTiling && W >= T && H >= T;
+            bool letterboxed = letterbox && W != H;
+            if (tiled || letterboxed)
+            {
+                try
+                {
+                    onProgress?.Invoke(0.5f);
+                    onComplete?.Invoke(Execute(inputTexture, T, useTiling, alignment, letterbox));
+                }
+                catch (Exception ex)
+                {
+                    onError?.Invoke($"Inference failed: {ex.Message}");
+                }
+                return;
+            }
+
+            // Async single-pass (square, or letterbox off) — the common large-texture case.
+            try
+            {
+                _asyncInput = ImageProcessor.PreprocessTexture(inputTexture, T, T, _inputRank);
+                _asyncPostprocess = t => ImageProcessor.PostprocessTensor(t, W, H);
+                _asyncProgress = onProgress;
+                _asyncComplete = onComplete;
+                _asyncError = onError;
+                StartAsyncSchedule();
+            }
+            catch (Exception ex)
+            {
+                CleanupAsync();
+                onError?.Invoke($"Failed to start inference: {ex.Message}");
+            }
+        }
+
+        private void StartAsyncSchedule()
+        {
+            _asyncRunning = true;
+            _asyncStepCount = 0;
+            _asyncSchedule = _worker.ScheduleIterable(_asyncInput);
+            _asyncPhase = AsyncPhase.Scheduling;
+            EditorApplication.update -= AsyncTick; // avoid double-subscribe
+            EditorApplication.update += AsyncTick;
+        }
+
+        private void AsyncTick()
+        {
+            if (_asyncPhase == AsyncPhase.Scheduling)
+            {
+                var budget = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    while (budget.Elapsed.TotalMilliseconds < AsyncBudgetMs)
+                    {
+                        if (!_asyncSchedule.MoveNext())
+                        {
+                            // Compute scheduled — request a non-blocking GPU->CPU readback.
+                            _asyncOutput = _worker.PeekOutput() as Tensor<float>;
+                            _asyncOutput.ReadbackRequest();
+                            _asyncPhase = AsyncPhase.Readback;
+                            _asyncProgress?.Invoke(0.95f);
+                            return;
+                        }
+                        _asyncStepCount++;
+                    }
+                    // ScheduleIterable doesn't expose a layer total, so approach 0.9 asymptotically.
+                    _asyncProgress?.Invoke(Mathf.Min(0.9f, _asyncStepCount / 300f));
+                }
+                catch (Exception ex)
+                {
+                    FinishAsyncError($"Inference failed: {ex.Message}");
+                }
+            }
+            else if (_asyncPhase == AsyncPhase.Readback)
+            {
+                try
+                {
+                    if (!_asyncOutput.IsReadbackRequestDone()) return; // still copying; editor stays free
+                    Texture2D result = _asyncPostprocess(_asyncOutput);
+                    FinishAsyncSuccess(result);
+                }
+                catch (Exception ex)
+                {
+                    FinishAsyncError($"Readback failed: {ex.Message}");
+                }
+            }
+        }
+
+        private void FinishAsyncSuccess(Texture2D result)
+        {
+            var progress = _asyncProgress;
+            var complete = _asyncComplete;
+            CleanupAsync();
+            progress?.Invoke(1f);
+            complete?.Invoke(result);
+        }
+
+        private void FinishAsyncError(string message)
+        {
+            var error = _asyncError;
+            CleanupAsync();
+            error?.Invoke(message);
+        }
+
+        private void CleanupAsync()
+        {
+            EditorApplication.update -= AsyncTick;
+            _asyncSchedule = null;
+            _asyncOutput = null; // owned by the worker
+            _asyncInput?.Dispose();
+            _asyncInput = null;
+            _asyncPostprocess = null;
+            _asyncProgress = null;
+            _asyncComplete = null;
+            _asyncError = null;
+            _asyncPhase = AsyncPhase.Idle;
+            _asyncRunning = false;
+        }
+
         public void Dispose()
         {
+            CleanupAsync();
             _worker?.Dispose();
             _worker = null;
         }

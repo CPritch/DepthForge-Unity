@@ -10,6 +10,17 @@
         </ui:VisualElement>
 
         <ui:VisualElement class="section">
+            <ui:Label text="Batch Queue" class="section-header" />
+            <ui:VisualElement class="action-buttons-row">
+                <ui:Button name="addToQueueButton" text="Add Selection to Queue" class="action-button" />
+                <ui:Button name="clearQueueButton" text="Clear" class="action-button" />
+            </ui:VisualElement>
+            <ui:ListView name="queueListView" />
+            <ui:Button name="batchGenerateButton" text="Generate &amp; Export All" class="generate-button" />
+            <ui:Label name="batchStatusLabel" text="Queue empty." class="status-label" />
+        </ui:VisualElement>
+
+        <ui:VisualElement class="section">
             <ui:Label text="Inference Settings" class="section-header" />
             <ui:EnumField name="modelSizeField" label="Model Size" />
             <ui:EnumField name="backendField" label="Inference Backend" />
