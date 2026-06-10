@@ -18,7 +18,15 @@ namespace CPritch.DepthForge.Editor
         {
             DepthForgeWindow wnd = GetWindow<DepthForgeWindow>();
             wnd.titleContent = new GUIContent("DepthForge");
-            wnd.minSize = new Vector2(450, 600);
+            // Low min so it can dock narrow (single-column); comfortable default when floated.
+            wnd.minSize = new Vector2(360, 480);
+            if (wnd.position.width < 760f)
+            {
+                Rect p = wnd.position;
+                p.width = 980f;
+                p.height = 640f;
+                wnd.position = p;
+            }
         }
 
         public void CreateGUI()
@@ -521,6 +529,21 @@ namespace CPritch.DepthForge.Editor
             if (_batchGenerateButton != null) _batchGenerateButton.clicked += StartBatch;
             UpdateBatchStatus();
 
+            // Responsive: stack the three zones vertically when the window is too narrow for columns.
+            var dfMain = root.Q<VisualElement>("dfMain");
+            if (dfMain != null)
+            {
+                dfMain.RegisterCallback<GeometryChangedEvent>(evt =>
+                {
+                    float w = evt.newRect.width;
+                    bool narrow = w > 0f && w < 720f;
+                    if (dfMain.ClassListContains("df-narrow") != narrow)
+                    {
+                        dfMain.EnableInClassList("df-narrow", narrow);
+                    }
+                });
+            }
+
             // Bind the IMGUI viewport rendering
             if (_outputPreview3D != null)
             {
@@ -847,10 +870,28 @@ namespace CPritch.DepthForge.Editor
 
         private void AddSelectionToQueue()
         {
-            int added = 0;
+            // Bulk path: a multi-selection of textures in the Project window. Otherwise fall back to
+            // the Base Map picker above, so single adds work without touching the Project window.
+            var candidates = new List<Texture2D>();
             foreach (var obj in Selection.objects)
             {
-                Texture2D tex = obj as Texture2D;
+                if (obj is Texture2D selTex) candidates.Add(selTex);
+            }
+            if (candidates.Count == 0 && _inputTextureField?.value is Texture2D fieldTex)
+            {
+                candidates.Add(fieldTex);
+            }
+
+            if (candidates.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Add to Queue",
+                    "Nothing to add. Set a Base Map above, or select one or more textures in the Project window, then Add to Queue.",
+                    "OK");
+                return;
+            }
+
+            foreach (var tex in candidates)
+            {
                 if (tex == null) continue;
                 if (_queue.Exists(j => j.source == tex)) continue;
 
@@ -858,16 +899,10 @@ namespace CPritch.DepthForge.Editor
                 var recipe = CPritch.DepthForge.Editor.Data.RecipeSidecar.Load(tex);
                 if (recipe != null) job.recipe = recipe;
                 _queue.Add(job);
-                added++;
             }
 
             _queueListView?.RefreshItems();
             UpdateBatchStatus();
-
-            if (added == 0)
-            {
-                EditorUtility.DisplayDialog("Add to Queue", "Select one or more Texture2D assets in the Project window first.", "OK");
-            }
         }
 
         private void ClearQueue()

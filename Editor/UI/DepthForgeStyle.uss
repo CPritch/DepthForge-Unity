@@ -180,3 +180,57 @@
 .hidden {
     display: none;
 }
+
+/* ---- Phase 4: three-zone responsive layout ---- */
+.df-root {
+    flex-grow: 1;
+    padding: 8px;
+    background-color: var(--unity-colors-window-background);
+}
+
+.df-main {
+    flex-direction: row;
+    flex-grow: 1;
+}
+
+.df-zone {
+    background-color: rgba(0, 0, 0, 0.15);
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.05);
+    padding: 8px;
+    margin: 4px;
+}
+
+.df-queue {
+    width: 220px;
+    min-width: 160px;
+    flex-shrink: 0;
+}
+
+.df-preview {
+    flex-grow: 1;
+    min-width: 280px;
+}
+
+.df-inspector {
+    width: 300px;
+    min-width: 260px;
+    flex-shrink: 0;
+}
+
+.df-foldout {
+    margin-bottom: 6px;
+}
+
+/* Narrow / docked: stack the zones vertically (toggled from code by width) */
+.df-narrow {
+    flex-direction: column;
+}
+
+.df-narrow .df-queue,
+.df-narrow .df-preview,
+.df-narrow .df-inspector {
+    width: auto;
+    flex-shrink: 1;
+}
