@@ -220,7 +220,45 @@
 }
 
 .df-foldout {
+    margin-bottom: 8px;
+    background-color: rgba(0, 0, 0, 0.12);
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.04);
+    padding: 4px 6px 6px 6px;
+}
+
+.unity-foldout__text {
+    -unity-font-style: bold;
+    color: #a8d08d;
+    font-size: 12px;
+}
+
+.unity-foldout__content {
+    margin-top: 4px;
+}
+
+/* Batch queue list fills its zone, with row hover + selection feedback */
+#queueListView {
+    flex-grow: 1;
+    margin-top: 4px;
     margin-bottom: 6px;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+.unity-list-view__item {
+    border-radius: 3px;
+    padding-left: 4px;
+}
+
+.unity-list-view__item:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.unity-collection-view__item--selected,
+.unity-list-view__item--selected {
+    background-color: rgba(46, 107, 59, 0.5);
 }
 
 /* Narrow / docked: stack the zones vertically (toggled from code by width) */

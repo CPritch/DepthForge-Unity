@@ -555,13 +555,26 @@ namespace CPritch.DepthForge.Editor
                 _queueListView.bindItem = (e, i) =>
                 {
                     var job = _queue[i];
+                    var label = (Label)e;
                     string name = job.source != null ? job.source.name : "(missing)";
                     string status = job.state.ToString();
                     if (job.state == CPritch.DepthForge.Editor.Data.JobState.Error && !string.IsNullOrEmpty(job.error))
                     {
                         status += $": {job.error}";
                     }
-                    ((Label)e).text = $"{name}  —  {status}";
+                    label.text = $"{name}  —  {status}";
+
+                    switch (job.state)
+                    {
+                        case CPritch.DepthForge.Editor.Data.JobState.Exported:
+                            label.style.color = new Color(0.45f, 0.78f, 0.42f); break;
+                        case CPritch.DepthForge.Editor.Data.JobState.Error:
+                            label.style.color = new Color(0.85f, 0.42f, 0.42f); break;
+                        case CPritch.DepthForge.Editor.Data.JobState.Generating:
+                            label.style.color = new Color(0.85f, 0.70f, 0.35f); break;
+                        default:
+                            label.style.color = StyleKeyword.Null; break;
+                    }
                 };
                 _queueListView.style.minHeight = 80;
                 _queueListView.selectionType = SelectionType.Single;
