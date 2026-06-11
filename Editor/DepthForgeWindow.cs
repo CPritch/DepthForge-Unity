@@ -161,6 +161,7 @@ namespace CPritch.DepthForge.Editor
         private VisualElement _previewControls3D;
         private VisualElement _outputPreview2D;
         private IMGUIContainer _outputPreview3D;
+        private VisualElement _inputPreview;
 
         // Action Buttons
         private Button _generateButton;
@@ -345,6 +346,7 @@ namespace CPritch.DepthForge.Editor
             _texturedPreviewToggle = root.Q<Toggle>("texturedPreviewToggle");
 
             var inputPreview = root.Q<VisualElement>("inputPreview");
+            _inputPreview = inputPreview;
             _progressBar = root.Q<ProgressBar>("progressBar");
 
             // Action buttons
@@ -523,6 +525,8 @@ namespace CPritch.DepthForge.Editor
                     ((Label)e).text = $"{name}  —  {status}";
                 };
                 _queueListView.style.minHeight = 80;
+                _queueListView.selectionType = SelectionType.Single;
+                _queueListView.selectionChanged += OnQueueSelectionChanged;
             }
             if (_addToQueueButton != null) _addToQueueButton.clicked += AddSelectionToQueue;
             if (_clearQueueButton != null) _clearQueueButton.clicked += ClearQueue;
@@ -903,6 +907,64 @@ namespace CPritch.DepthForge.Editor
 
             _queueListView?.RefreshItems();
             UpdateBatchStatus();
+        }
+
+        private void OnQueueSelectionChanged(IEnumerable<object> selected)
+        {
+            foreach (var o in selected)
+            {
+                if (o is CPritch.DepthForge.Editor.Data.Job job)
+                {
+                    FocusJob(job);
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Makes a queue Job the active focus: its source fills the Base Map picker, its recipe
+        /// populates the inspector, and its cached raw restores the preview — all without re-running
+        /// inference. The previously focused job keeps its in-progress UI edits (in memory).
+        /// </summary>
+        private void FocusJob(CPritch.DepthForge.Editor.Data.Job job)
+        {
+            if (job == null || job.source == null) return;
+            if (_currentJob == job) return;
+
+            // Preserve the outgoing job's in-flight UI edits before switching away.
+            if (_currentJob != null)
+            {
+                _currentJob.recipe = BuildRecipeFromUI();
+            }
+
+            // Drop the current working heightmaps; the new focus loads its own.
+            if (_rawHeightmap != null) { DestroyImmediate(_rawHeightmap); _rawHeightmap = null; }
+            if (_adjustedHeightmap != null) { DestroyImmediate(_adjustedHeightmap); _adjustedHeightmap = null; }
+
+            _currentJob = job;
+
+            // Reflect the source in the picker + input preview without re-triggering the field reload.
+            _inputTextureField?.SetValueWithoutNotify(job.source);
+            if (_inputPreview != null) _inputPreview.style.backgroundImage = job.source;
+
+            ApplyRecipeToUI(job.recipe);
+
+            // Restore the cached raw depth so the preview shows the result without re-inference.
+            var cachedRaw = CPritch.DepthForge.Editor.Data.RawCache.LoadRaw(job.source);
+            if (cachedRaw != null)
+            {
+                _rawHeightmap = cachedRaw;
+                UpdateAdjustedHeightmap();
+                SetActionButtonsEnabled(true);
+            }
+            else
+            {
+                SetActionButtonsEnabled(false);
+                if (_outputPreview2D != null) _outputPreview2D.style.backgroundImage = null;
+            }
+
+            UpdatePreviewMaterial();
+            Repaint();
         }
 
         private void ClearQueue()
