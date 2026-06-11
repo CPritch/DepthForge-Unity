@@ -21,8 +21,10 @@
             <!-- CENTER: Preview -->
             <ui:VisualElement class="df-zone df-preview preview-section">
                 <ui:VisualElement class="preview-tabs">
-                    <ui:Button name="btnPreview2D" text="2D Heightmap" class="tab-button active-tab" />
-                    <ui:Button name="btnPreview3D" text="3D Displaced Mesh" class="tab-button" />
+                    <ui:Button name="tabHeight" text="Height" class="tab-button active-tab" />
+                    <ui:Button name="tabNormal" text="Normal" class="tab-button" />
+                    <ui:Button name="tabAO" text="AO" class="tab-button" />
+                    <ui:Button name="tab3D" text="3D" class="tab-button" />
                 </ui:VisualElement>
                 <ui:VisualElement name="previewControls3D" class="preview-controls hidden">
                     <ui:Toggle name="texturedPreviewToggle" label="Drape Albedo Texture" value="true" />

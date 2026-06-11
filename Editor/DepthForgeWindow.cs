@@ -156,8 +156,14 @@ namespace CPritch.DepthForge.Editor
         private Label _microSplatStatusLabel;
 
         // Tabs & Viewports
-        private Button _btnPreview2D;
-        private Button _btnPreview3D;
+        private enum PreviewTab { Height, Normal, AO, ThreeD }
+        private PreviewTab _activeTab = PreviewTab.Height;
+        private Button _tabHeight;
+        private Button _tabNormal;
+        private Button _tabAO;
+        private Button _tab3D;
+        private Texture2D _normalPreview;
+        private Texture2D _aoPreview;
         private VisualElement _previewControls3D;
         private VisualElement _outputPreview2D;
         private IMGUIContainer _outputPreview3D;
@@ -184,12 +190,12 @@ namespace CPritch.DepthForge.Editor
         // 3D Preview State
         private Texture2D _rawHeightmap;
         private Texture2D _adjustedHeightmap;
-        private bool _show3DPreview = false;
         private PreviewRenderUtility _previewUtility;
         private Mesh _previewMesh;
         private Material _previewMaterial;
         private Texture2D _checkerboardTex;
         private Vector2 _previewDrag = new Vector2(45f, 45f);
+        // (legacy _show3DPreview removed — preview is now tab-driven via _activeTab)
 
         // Scene preview state
         private GameObject _inScenePreviewObject;
@@ -226,6 +232,18 @@ namespace CPritch.DepthForge.Editor
             {
                 DestroyImmediate(_adjustedHeightmap);
                 _adjustedHeightmap = null;
+            }
+
+            if (_normalPreview != null)
+            {
+                DestroyImmediate(_normalPreview);
+                _normalPreview = null;
+            }
+
+            if (_aoPreview != null)
+            {
+                DestroyImmediate(_aoPreview);
+                _aoPreview = null;
             }
 
             if (_previewMesh != null)
@@ -338,8 +356,10 @@ namespace CPritch.DepthForge.Editor
             }
 
             // Tabs & Preview
-            _btnPreview2D = root.Q<Button>("btnPreview2D");
-            _btnPreview3D = root.Q<Button>("btnPreview3D");
+            _tabHeight = root.Q<Button>("tabHeight");
+            _tabNormal = root.Q<Button>("tabNormal");
+            _tabAO = root.Q<Button>("tabAO");
+            _tab3D = root.Q<Button>("tab3D");
             _previewControls3D = root.Q<VisualElement>("previewControls3D");
             _outputPreview2D = root.Q<VisualElement>("outputPreview2D");
             _outputPreview3D = root.Q<IMGUIContainer>("outputPreview3D");
@@ -492,10 +512,29 @@ namespace CPritch.DepthForge.Editor
                     Repaint();
                 });
             }
+            // Map-strength changes invalidate the cached map preview so the active tab refreshes.
+            if (_normalStrengthSlider != null)
+            {
+                _normalStrengthSlider.RegisterValueChangedCallback(evt =>
+                {
+                    if (_normalPreview != null) { DestroyImmediate(_normalPreview); _normalPreview = null; }
+                    if (_activeTab == PreviewTab.Normal) RefreshActiveTab();
+                });
+            }
+            if (_aoStrengthSlider != null)
+            {
+                _aoStrengthSlider.RegisterValueChangedCallback(evt =>
+                {
+                    if (_aoPreview != null) { DestroyImmediate(_aoPreview); _aoPreview = null; }
+                    if (_activeTab == PreviewTab.AO) RefreshActiveTab();
+                });
+            }
 
             // Tab navigation callbacks
-            if (_btnPreview2D != null) _btnPreview2D.clicked += () => SetPreviewMode(false);
-            if (_btnPreview3D != null) _btnPreview3D.clicked += () => SetPreviewMode(true);
+            if (_tabHeight != null) _tabHeight.clicked += () => SetPreviewTab(PreviewTab.Height);
+            if (_tabNormal != null) _tabNormal.clicked += () => SetPreviewTab(PreviewTab.Normal);
+            if (_tabAO != null) _tabAO.clicked += () => SetPreviewTab(PreviewTab.AO);
+            if (_tab3D != null) _tab3D.clicked += () => SetPreviewTab(PreviewTab.ThreeD);
 
             // Main actions callbacks
             _generateButton.clicked += OnGenerateClicked;
@@ -569,28 +608,73 @@ namespace CPritch.DepthForge.Editor
             if (_previewMeshButton != null) _previewMeshButton.SetEnabled(enabled);
         }
 
-        private void SetPreviewMode(bool show3D)
+        private void SetPreviewTab(PreviewTab tab)
         {
-            _show3DPreview = show3D;
-            if (show3D)
-            {
-                _btnPreview2D?.RemoveFromClassList("active-tab");
-                _btnPreview3D?.AddToClassList("active-tab");
+            _activeTab = tab;
 
+            _tabHeight?.EnableInClassList("active-tab", tab == PreviewTab.Height);
+            _tabNormal?.EnableInClassList("active-tab", tab == PreviewTab.Normal);
+            _tabAO?.EnableInClassList("active-tab", tab == PreviewTab.AO);
+            _tab3D?.EnableInClassList("active-tab", tab == PreviewTab.ThreeD);
+
+            if (tab == PreviewTab.ThreeD)
+            {
                 _outputPreview2D?.AddToClassList("hidden");
                 _outputPreview3D?.RemoveFromClassList("hidden");
                 _previewControls3D?.RemoveFromClassList("hidden");
             }
             else
             {
-                _btnPreview2D?.AddToClassList("active-tab");
-                _btnPreview3D?.RemoveFromClassList("active-tab");
-
                 _outputPreview2D?.RemoveFromClassList("hidden");
                 _outputPreview3D?.AddToClassList("hidden");
                 _previewControls3D?.AddToClassList("hidden");
+                RefreshActiveTab();
             }
             Repaint();
+        }
+
+        /// <summary>Sets the 2D preview image to match the active map tab, generating map previews lazily.</summary>
+        private void RefreshActiveTab()
+        {
+            if (_activeTab == PreviewTab.ThreeD || _outputPreview2D == null) return;
+
+            Texture2D tex = null;
+            switch (_activeTab)
+            {
+                case PreviewTab.Height: tex = _adjustedHeightmap; break;
+                case PreviewTab.Normal: tex = EnsureNormalPreview(); break;
+                case PreviewTab.AO: tex = EnsureAOPreview(); break;
+            }
+            _outputPreview2D.style.backgroundImage = tex;
+        }
+
+        private Texture2D EnsureNormalPreview()
+        {
+            if (_adjustedHeightmap == null) return null;
+            if (_normalPreview == null)
+            {
+                float strength = _normalStrengthSlider != null ? _normalStrengthSlider.value : 8f;
+                _normalPreview = ImageProcessor.GenerateNormalMap(_adjustedHeightmap, strength);
+            }
+            return _normalPreview;
+        }
+
+        private Texture2D EnsureAOPreview()
+        {
+            if (_adjustedHeightmap == null) return null;
+            if (_aoPreview == null)
+            {
+                float strength = _aoStrengthSlider != null ? _aoStrengthSlider.value : 1f;
+                float radius = _currentJob != null ? _currentJob.recipe.aoRadius : 0.02f;
+                _aoPreview = ImageProcessor.GenerateAO(_adjustedHeightmap, strength, radius);
+            }
+            return _aoPreview;
+        }
+
+        private void InvalidateMapPreviews()
+        {
+            if (_normalPreview != null) { DestroyImmediate(_normalPreview); _normalPreview = null; }
+            if (_aoPreview != null) { DestroyImmediate(_aoPreview); _aoPreview = null; }
         }
 
         private void OnGenerateClicked()
@@ -940,6 +1024,7 @@ namespace CPritch.DepthForge.Editor
             // Drop the current working heightmaps; the new focus loads its own.
             if (_rawHeightmap != null) { DestroyImmediate(_rawHeightmap); _rawHeightmap = null; }
             if (_adjustedHeightmap != null) { DestroyImmediate(_adjustedHeightmap); _adjustedHeightmap = null; }
+            InvalidateMapPreviews();
 
             _currentJob = job;
 
@@ -1078,10 +1163,9 @@ namespace CPritch.DepthForge.Editor
                 DestroyImmediate(oldAdjusted);
             }
 
-            if (_outputPreview2D != null)
-            {
-                _outputPreview2D.style.backgroundImage = _adjustedHeightmap;
-            }
+            // The adjusted heightmap changed, so cached Normal/AO previews are stale.
+            InvalidateMapPreviews();
+            RefreshActiveTab();
 
             // Regenerate the 3D meshes/materials based on the new pixels
             UpdatePreviewMesh();
