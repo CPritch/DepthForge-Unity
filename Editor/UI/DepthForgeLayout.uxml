@@ -21,6 +21,7 @@
             <!-- CENTER: Preview -->
             <ui:VisualElement class="df-zone df-preview preview-section">
                 <ui:VisualElement class="preview-tabs">
+                    <ui:Button name="tabSource" text="Source" class="tab-button" />
                     <ui:Button name="tabHeight" text="Height" class="tab-button active-tab" />
                     <ui:Button name="tabNormal" text="Normal" class="tab-button" />
                     <ui:Button name="tabAO" text="AO" class="tab-button" />
@@ -30,8 +31,6 @@
                     <ui:Toggle name="texturedPreviewToggle" label="Drape Albedo Texture" value="true" />
                 </ui:VisualElement>
                 <ui:VisualElement class="preview-container">
-                    <ui:VisualElement name="inputPreview" class="preview-box" />
-                    <ui:VisualElement class="preview-divider" />
                     <ui:VisualElement name="previewRight" class="preview-box">
                         <ui:VisualElement name="outputPreview2D" class="preview-inner" />
                         <ui:IMGUIContainer name="outputPreview3D" class="preview-inner hidden" />

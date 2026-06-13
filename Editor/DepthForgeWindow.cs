@@ -156,8 +156,9 @@ namespace CPritch.DepthForge.Editor
         private Label _microSplatStatusLabel;
 
         // Tabs & Viewports
-        private enum PreviewTab { Height, Normal, AO, ThreeD }
+        private enum PreviewTab { Source, Height, Normal, AO, ThreeD }
         private PreviewTab _activeTab = PreviewTab.Height;
+        private Button _tabSource;
         private Button _tabHeight;
         private Button _tabNormal;
         private Button _tabAO;
@@ -167,7 +168,6 @@ namespace CPritch.DepthForge.Editor
         private VisualElement _previewControls3D;
         private VisualElement _outputPreview2D;
         private IMGUIContainer _outputPreview3D;
-        private VisualElement _inputPreview;
 
         // Action Buttons
         private Button _generateButton;
@@ -356,6 +356,7 @@ namespace CPritch.DepthForge.Editor
             }
 
             // Tabs & Preview
+            _tabSource = root.Q<Button>("tabSource");
             _tabHeight = root.Q<Button>("tabHeight");
             _tabNormal = root.Q<Button>("tabNormal");
             _tabAO = root.Q<Button>("tabAO");
@@ -365,8 +366,6 @@ namespace CPritch.DepthForge.Editor
             _outputPreview3D = root.Q<IMGUIContainer>("outputPreview3D");
             _texturedPreviewToggle = root.Q<Toggle>("texturedPreviewToggle");
 
-            var inputPreview = root.Q<VisualElement>("inputPreview");
-            _inputPreview = inputPreview;
             _progressBar = root.Q<ProgressBar>("progressBar");
 
             // Action buttons
@@ -446,8 +445,6 @@ namespace CPritch.DepthForge.Editor
 
                 if (tex != null)
                 {
-                    inputPreview.style.backgroundImage = tex;
-
                     // Phase 1 (R1/R5): wrap the source in a Job and reload any persisted recipe
                     // so prior depth work on this texture is restored.
                     _currentJob = new CPritch.DepthForge.Editor.Data.Job(tex);
@@ -472,9 +469,9 @@ namespace CPritch.DepthForge.Editor
                 }
                 else
                 {
-                    inputPreview.style.backgroundImage = null;
                     _currentJob = null;
                 }
+                RefreshActiveTab();
                 UpdatePreviewMaterial();
                 Repaint();
             });
@@ -531,6 +528,7 @@ namespace CPritch.DepthForge.Editor
             }
 
             // Tab navigation callbacks
+            if (_tabSource != null) _tabSource.clicked += () => SetPreviewTab(PreviewTab.Source);
             if (_tabHeight != null) _tabHeight.clicked += () => SetPreviewTab(PreviewTab.Height);
             if (_tabNormal != null) _tabNormal.clicked += () => SetPreviewTab(PreviewTab.Normal);
             if (_tabAO != null) _tabAO.clicked += () => SetPreviewTab(PreviewTab.AO);
@@ -592,11 +590,10 @@ namespace CPritch.DepthForge.Editor
                 dfMain.RegisterCallback<GeometryChangedEvent>(evt =>
                 {
                     float w = evt.newRect.width;
-                    bool narrow = w > 0f && w < 720f;
-                    if (dfMain.ClassListContains("df-narrow") != narrow)
-                    {
-                        dfMain.EnableInClassList("df-narrow", narrow);
-                    }
+                    bool narrow = w > 0f && w < 600f;            // stack into one column
+                    bool medium = w >= 600f && w < 820f;         // compressed three columns
+                    if (dfMain.ClassListContains("df-narrow") != narrow) dfMain.EnableInClassList("df-narrow", narrow);
+                    if (dfMain.ClassListContains("df-medium") != medium) dfMain.EnableInClassList("df-medium", medium);
                 });
             }
 
@@ -625,6 +622,7 @@ namespace CPritch.DepthForge.Editor
         {
             _activeTab = tab;
 
+            _tabSource?.EnableInClassList("active-tab", tab == PreviewTab.Source);
             _tabHeight?.EnableInClassList("active-tab", tab == PreviewTab.Height);
             _tabNormal?.EnableInClassList("active-tab", tab == PreviewTab.Normal);
             _tabAO?.EnableInClassList("active-tab", tab == PreviewTab.AO);
@@ -654,6 +652,7 @@ namespace CPritch.DepthForge.Editor
             Texture2D tex = null;
             switch (_activeTab)
             {
+                case PreviewTab.Source: tex = _inputTextureField?.value as Texture2D; break;
                 case PreviewTab.Height: tex = _adjustedHeightmap; break;
                 case PreviewTab.Normal: tex = EnsureNormalPreview(); break;
                 case PreviewTab.AO: tex = EnsureAOPreview(); break;
@@ -1043,7 +1042,6 @@ namespace CPritch.DepthForge.Editor
 
             // Reflect the source in the picker + input preview without re-triggering the field reload.
             _inputTextureField?.SetValueWithoutNotify(job.source);
-            if (_inputPreview != null) _inputPreview.style.backgroundImage = job.source;
 
             ApplyRecipeToUI(job.recipe);
 
@@ -1058,7 +1056,7 @@ namespace CPritch.DepthForge.Editor
             else
             {
                 SetActionButtonsEnabled(false);
-                if (_outputPreview2D != null) _outputPreview2D.style.backgroundImage = null;
+                RefreshActiveTab();
             }
 
             UpdatePreviewMaterial();

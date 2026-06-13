@@ -272,3 +272,18 @@
     width: auto;
     flex-shrink: 1;
 }
+
+/* Medium: keep three columns but compress so master/detail survives down to ~600px */
+.df-medium .df-queue {
+    width: 180px;
+    min-width: 140px;
+}
+
+.df-medium .df-preview {
+    min-width: 180px;
+}
+
+.df-medium .df-inspector {
+    width: 240px;
+    min-width: 200px;
+}
