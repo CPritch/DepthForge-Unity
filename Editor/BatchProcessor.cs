@@ -101,12 +101,14 @@ namespace CPritch.DepthForge.Editor
                 Recipe r = job.recipe;
                 Texture2D adjusted = ImageProcessor.ApplyAdjustments(raw, r.contrast, r.midpoint, r.invert, r.flatten);
 
-                TextureExporter.SaveHeightmap(adjusted, job.source, r.format);
+                // Record export paths so the Window can do a single MicroSplat assign-all afterwards.
+                job.normalPath = null;
+                job.heightmapPath = TextureExporter.SaveHeightmap(adjusted, job.source, r.format);
 
                 if (r.exportNormal)
                 {
                     Texture2D n = ImageProcessor.GenerateNormalMap(adjusted, r.normalStrength);
-                    if (n != null) { TextureExporter.SaveNormalMap(n, job.source); UnityEngine.Object.DestroyImmediate(n); }
+                    if (n != null) { job.normalPath = TextureExporter.SaveNormalMap(n, job.source); UnityEngine.Object.DestroyImmediate(n); }
                 }
                 if (r.exportAO)
                 {

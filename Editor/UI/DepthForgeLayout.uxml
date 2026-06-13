@@ -70,7 +70,7 @@
 
                 <ui:Foldout text="Export" value="false" class="df-foldout">
                     <ui:EnumField name="outputFormatField" label="Export Format" />
-                    <ui:Toggle name="autoAssignToggle" label="Auto-Assign to MicroSplat" value="true" />
+                    <ui:Toggle name="autoAssignToggle" label="Auto-Assign to MicroSplat" tooltip="On export, push Height + Normal into matching MicroSplat config entries. Batch honours each queued texture's own setting." value="true" />
                     <ui:Label name="microSplatStatusLabel" text="Checking for MicroSplat..." class="status-label" />
                 </ui:Foldout>
 

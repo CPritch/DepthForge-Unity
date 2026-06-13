@@ -1155,6 +1155,8 @@ namespace CPritch.DepthForge.Editor
                     _queueListView?.RefreshItems();
                     UpdateBatchStatus();
                     AssetDatabase.Refresh();
+                    // R10: assign every exported job's maps to MicroSplat in one pass (compile once per config).
+                    TryAssignBatchToMicroSplat();
                     Repaint();
                 });
             _batch.Start();
@@ -1731,7 +1733,10 @@ namespace CPritch.DepthForge.Editor
                 bool autoAssign = _autoAssignToggle != null ? _autoAssignToggle.value : false;
                 if (autoAssign && IsMicroSplatPresent())
                 {
-                    AutoAssignToMicroSplat(path, normalPath, inputTex);
+                    AssignToMicroSplat(new List<MicroSplatAssignment>
+                    {
+                        new MicroSplatAssignment { diffuse = inputTex, heightPath = path, normalPath = normalPath }
+                    });
                 }
 
                 // Phase 1 (R5): persist the recipe sidecar so this depth work is re-editable later.
@@ -1809,32 +1814,68 @@ namespace CPritch.DepthForge.Editor
             return null;
         }
 
-        private void AutoAssignToMicroSplat(string heightmapPath, string normalPath, Texture2D sourceDiffuse)
+        // One diffuse → its freshly-exported height/normal asset paths. Batching these lets us assign a
+        // whole queue and compile each MicroSplat config only once (R10 "assign-all").
+        private struct MicroSplatAssignment
         {
+            public Texture2D diffuse;
+            public string heightPath;
+            public string normalPath;
+        }
+
+        /// <summary>After a batch export, push every exported job's maps into MicroSplat in one pass.</summary>
+        private void TryAssignBatchToMicroSplat()
+        {
+            if (!IsMicroSplatPresent()) return;
+
+            var assignments = new List<MicroSplatAssignment>();
+            foreach (var job in _queue)
+            {
+                if (job == null || job.source == null) continue;
+                if (job.state != CPritch.DepthForge.Editor.Data.JobState.Exported) continue;
+                if (!job.recipe.autoAssignMicroSplat) continue;
+                if (string.IsNullOrEmpty(job.heightmapPath)) continue;
+                assignments.Add(new MicroSplatAssignment
+                {
+                    diffuse = job.source,
+                    heightPath = job.heightmapPath,
+                    normalPath = job.normalPath
+                });
+            }
+
+            if (assignments.Count > 0) AssignToMicroSplat(assignments);
+        }
+
+        /// <summary>
+        /// Assigns one-or-many (diffuse → height/normal) sets into every matching MicroSplat
+        /// TextureArrayConfig entry, then saves + compiles each touched config exactly once.
+        /// </summary>
+        private void AssignToMicroSplat(List<MicroSplatAssignment> assignments)
+        {
+            if (assignments == null || assignments.Count == 0) return;
+
             string[] guids = AssetDatabase.FindAssets("t:JBooth.MicroSplat.TextureArrayConfig");
             if (guids == null || guids.Length == 0)
             {
                 guids = AssetDatabase.FindAssets("t:TextureArrayConfig");
             }
-
             if (guids == null || guids.Length == 0)
             {
                 Debug.LogWarning("[DepthForge] No MicroSplat TextureArrayConfig found in the project. Skipping auto-assignment.");
                 return;
             }
 
-            Texture2D heightmapTex = AssetDatabase.LoadAssetAtPath<Texture2D>(heightmapPath);
-            if (heightmapTex == null)
+            var texCache = new Dictionary<string, Texture2D>();
+            Texture2D LoadTex(string p)
             {
-                Debug.LogError($"[DepthForge] Failed to load generated heightmap at: {heightmapPath}");
-                return;
+                if (string.IsNullOrEmpty(p)) return null;
+                if (!texCache.TryGetValue(p, out var t)) { t = AssetDatabase.LoadAssetAtPath<Texture2D>(p); texCache[p] = t; }
+                return t;
             }
 
-            Texture2D normalTex = string.IsNullOrEmpty(normalPath)
-                ? null
-                : AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
-
-            bool assignedAny = false;
+            var changedConfigs = new List<ScriptableObject>();
+            Type changedConfigType = null;
+            int assignedCount = 0;
 
             foreach (string guid in guids)
             {
@@ -1862,61 +1903,81 @@ namespace CPritch.DepthForge.Editor
                     if (diffuseField == null) continue;
 
                     Texture2D diffuseTex = diffuseField.GetValue(entry) as Texture2D;
-                    if (diffuseTex == sourceDiffuse)
+                    if (diffuseTex == null) continue;
+
+                    // Find the assignment whose diffuse matches this config entry.
+                    int matchIdx = assignments.FindIndex(a => a.diffuse == diffuseTex);
+                    if (matchIdx < 0) continue;
+                    var match = assignments[matchIdx];
+
+                    Texture2D heightTex = LoadTex(match.heightPath);
+                    if (heightTex != null)
                     {
                         var heightField = entryType.GetField("height");
                         if (heightField != null)
                         {
-                            heightField.SetValue(entry, heightmapTex);
+                            heightField.SetValue(entry, heightTex);
                             configChanged = true;
-                            assignedAny = true;
-                            Debug.Log($"[DepthForge] Auto-assigned heightmap to MicroSplat Config '{config.name}' for diffuse texture '{sourceDiffuse.name}'");
+                            assignedCount++;
+                            Debug.Log($"[DepthForge] Assigned heightmap to MicroSplat '{config.name}' for '{diffuseTex.name}'");
                         }
+                    }
 
-                        if (normalTex != null)
+                    Texture2D normalTex = LoadTex(match.normalPath);
+                    if (normalTex != null)
+                    {
+                        var normalField = entryType.GetField("normal");
+                        if (normalField != null)
                         {
-                            var normalField = entryType.GetField("normal");
-                            if (normalField != null)
-                            {
-                                normalField.SetValue(entry, normalTex);
-                                configChanged = true;
-                                assignedAny = true;
-                                Debug.Log($"[DepthForge] Auto-assigned normal map to MicroSplat Config '{config.name}' for diffuse texture '{sourceDiffuse.name}'");
-                            }
+                            normalField.SetValue(entry, normalTex);
+                            configChanged = true;
+                            Debug.Log($"[DepthForge] Assigned normal map to MicroSplat '{config.name}' for '{diffuseTex.name}'");
                         }
                     }
                 }
 
                 if (configChanged)
                 {
-                    EditorUtility.SetDirty(config);
-                    AssetDatabase.SaveAssets();
-
-                    Type editorType = FindTypeInAssemblies("JBooth.MicroSplat.TextureArrayConfigEditor");
-                    if (editorType != null)
-                    {
-                        var compileMethod = editorType.GetMethod("CompileConfig", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, new Type[] { configType }, null);
-                        if (compileMethod != null)
-                        {
-                            Debug.Log($"[DepthForge] Compiling MicroSplat Texture Array Config: {config.name}");
-                            compileMethod.Invoke(null, new object[] { config });
-                        }
-                        else
-                        {
-                            Debug.LogWarning("[DepthForge] MicroSplat compile method 'CompileConfig' not found.");
-                        }
-                    }
-                    else
-                    {
-                        Debug.LogWarning("[DepthForge] MicroSplat Editor type 'JBooth.MicroSplat.TextureArrayConfigEditor' not found.");
-                    }
+                    changedConfigs.Add(config);
+                    changedConfigType = configType;
                 }
             }
 
-            if (!assignedAny)
+            if (changedConfigs.Count == 0)
             {
-                Debug.LogWarning($"[DepthForge] Could not find any MicroSplat config entry matching diffuse texture '{sourceDiffuse.name}'");
+                Debug.LogWarning("[DepthForge] No MicroSplat config entry matched the exported diffuse texture(s).");
+                return;
             }
+
+            // Save all touched configs, then compile each once (compile is the expensive part).
+            foreach (var cfg in changedConfigs) EditorUtility.SetDirty(cfg);
+            AssetDatabase.SaveAssets();
+
+            Type editorType = FindTypeInAssemblies("JBooth.MicroSplat.TextureArrayConfigEditor");
+            if (editorType != null && changedConfigType != null)
+            {
+                var compileMethod = editorType.GetMethod("CompileConfig",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                    null, new Type[] { changedConfigType }, null);
+                if (compileMethod != null)
+                {
+                    foreach (var cfg in changedConfigs)
+                    {
+                        Debug.Log($"[DepthForge] Compiling MicroSplat Texture Array Config: {cfg.name}");
+                        compileMethod.Invoke(null, new object[] { cfg });
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning("[DepthForge] MicroSplat compile method 'CompileConfig' not found.");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[DepthForge] MicroSplat Editor type 'JBooth.MicroSplat.TextureArrayConfigEditor' not found.");
+            }
+
+            Debug.Log($"[DepthForge] Auto-assigned maps to MicroSplat for {assignedCount} entr{(assignedCount == 1 ? "y" : "ies")} across {changedConfigs.Count} config(s).");
         }
     }
 }
