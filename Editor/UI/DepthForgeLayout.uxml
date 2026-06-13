@@ -40,6 +40,19 @@
 
             <!-- RIGHT: Inspector (accordion) -->
             <ui:ScrollView class="df-zone df-inspector">
+                <ui:Foldout text="Presets" value="true" class="df-foldout">
+                    <ui:VisualElement class="preset-row">
+                        <ui:DropdownField name="presetDropdown" label="Preset" class="preset-dropdown" />
+                        <ui:Label name="presetDirtyMarker" text="*" tooltip="Settings differ from the saved preset" class="preset-dirty hidden" />
+                        <ui:Button name="savePresetButton" class="preset-icon-button" />
+                        <ui:Button name="deletePresetButton" class="preset-icon-button" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="preset-row">
+                        <ui:TextField name="presetNameField" label="Save As" class="preset-name-field" />
+                        <ui:Button name="saveAsPresetButton" class="preset-icon-button" />
+                    </ui:VisualElement>
+                </ui:Foldout>
+
                 <ui:Foldout text="Adjustments" value="true" class="df-foldout">
                     <ui:Slider name="strengthSlider" label="3D Preview Strength" start-value="0.1" end-value="3.0" value="1.0" />
                     <ui:Slider name="contrastSlider" label="Contrast" start-value="0.1" end-value="3.0" value="1.0" />

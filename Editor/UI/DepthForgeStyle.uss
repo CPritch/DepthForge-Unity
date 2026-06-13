@@ -287,3 +287,46 @@
     width: 240px;
     min-width: 200px;
 }
+
+/* Presets foldout */
+.preset-row {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 3px;
+}
+
+.preset-dropdown {
+    flex-grow: 1;
+}
+
+.preset-name-field {
+    flex-grow: 1;
+}
+
+.preset-dirty {
+    width: 14px;
+    -unity-font-style: bold;
+    font-size: 16px;
+    -unity-text-align: middle-center;
+    color: #e0b341;
+}
+
+.preset-icon-button {
+    width: 26px;
+    height: 22px;
+    margin-left: 3px;
+    padding: 1px;
+    background-color: rgba(255, 255, 255, 0.06);
+    background-position: center;
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.preset-icon-button:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.preset-icon-button:disabled {
+    opacity: 0.35;
+}

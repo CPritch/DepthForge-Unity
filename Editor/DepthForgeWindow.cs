@@ -175,6 +175,15 @@ namespace CPritch.DepthForge.Editor
         private Button _previewMeshButton;
         private ProgressBar _progressBar;
 
+        // Presets (R6)
+        private DropdownField _presetDropdown;
+        private TextField _presetNameField;
+        private Label _presetDirtyMarker;
+        private Button _savePresetButton;
+        private Button _saveAsPresetButton;
+        private Button _deletePresetButton;
+        private string _selectedPresetName;
+
         // Batch queue (R2)
         private List<CPritch.DepthForge.Editor.Data.Job> _queue = new List<CPritch.DepthForge.Editor.Data.Job>();
         private ListView _queueListView;
@@ -582,6 +591,37 @@ namespace CPritch.DepthForge.Editor
             if (_clearQueueButton != null) _clearQueueButton.clicked += ClearQueue;
             if (_batchGenerateButton != null) _batchGenerateButton.clicked += StartBatch;
             UpdateBatchStatus();
+
+            // Presets (R6)
+            _presetDropdown = root.Q<DropdownField>("presetDropdown");
+            _presetNameField = root.Q<TextField>("presetNameField");
+            _presetDirtyMarker = root.Q<Label>("presetDirtyMarker");
+            _savePresetButton = root.Q<Button>("savePresetButton");
+            _saveAsPresetButton = root.Q<Button>("saveAsPresetButton");
+            _deletePresetButton = root.Q<Button>("deletePresetButton");
+
+            SetButtonIcon(_savePresetButton, "SaveActive", "Overwrite this preset with the current settings");
+            SetButtonIcon(_saveAsPresetButton, "SaveAs", "Save the current settings as a new preset");
+            SetButtonIcon(_deletePresetButton, "TreeEditor.Trash", "Delete this preset");
+
+            if (_presetDropdown != null)
+                _presetDropdown.RegisterValueChangedCallback(evt => OnPresetSelected(evt.newValue));
+            if (_savePresetButton != null) _savePresetButton.clicked += OverwritePreset;
+            if (_saveAsPresetButton != null) _saveAsPresetButton.clicked += SaveAsNewPreset;
+            if (_deletePresetButton != null) _deletePresetButton.clicked += DeletePreset;
+
+            // Any change to a tuning control re-evaluates the dirty marker against the selected preset.
+            _invertToggle?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _contrastSlider?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _midpointSlider?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _flattenSlider?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _exportNormalToggle?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _normalStrengthSlider?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _exportAOToggle?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _aoStrengthSlider?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+            _outputFormatField?.RegisterValueChangedCallback(_ => RecomputePresetDirty());
+
+            RefreshPresetDropdown(CPritch.DepthForge.Editor.Data.PresetStore.DefaultName);
 
             // Responsive: stack the three zones vertically when the window is too narrow for columns.
             var dfMain = root.Q<VisualElement>("dfMain");
@@ -1157,6 +1197,193 @@ namespace CPritch.DepthForge.Editor
             return BackendType.GPUCompute;
         }
 
+        // ---- Presets (R6) -------------------------------------------------------------------
+        // Presets carry only the tuning half of a recipe (adjustments + maps + format); the
+        // generation half (model/backend/tiling/letterbox) is left as the focused job has it, so a
+        // "Rock" look applies no matter which model is downloaded.
+
+        private void SetButtonIcon(Button button, string iconName, string tooltip)
+        {
+            if (button == null) return;
+            button.text = string.Empty;
+            button.tooltip = tooltip;
+
+            // Prefer the dark-skin ("d_") variant when appropriate; fall back to the base icon.
+            GUIContent content = null;
+            if (EditorGUIUtility.isProSkin) content = EditorGUIUtility.IconContent("d_" + iconName);
+            if (content == null || content.image == null) content = EditorGUIUtility.IconContent(iconName);
+            if (content?.image is Texture2D tex)
+            {
+                button.style.backgroundImage = new StyleBackground(tex);
+            }
+        }
+
+        private void RefreshPresetDropdown(string selectName)
+        {
+            if (_presetDropdown == null) return;
+            var all = CPritch.DepthForge.Editor.Data.PresetStore.GetAll();
+            var names = new List<string>(all.Count);
+            foreach (var p in all) names.Add(p.name);
+            _presetDropdown.choices = names;
+
+            string sel = (!string.IsNullOrEmpty(selectName) && names.Contains(selectName)) ? selectName
+                       : (names.Count > 0 ? names[0] : null);
+            _presetDropdown.SetValueWithoutNotify(sel);
+            _selectedPresetName = sel;
+
+            UpdateDeletePresetButton();
+            RecomputePresetDirty();
+        }
+
+        private void UpdateDeletePresetButton()
+        {
+            if (_deletePresetButton == null) return;
+            bool deletable = !string.IsNullOrEmpty(_selectedPresetName)
+                && !CPritch.DepthForge.Editor.Data.PresetStore.IsBuiltin(_selectedPresetName)
+                && CPritch.DepthForge.Editor.Data.PresetStore.Find(_selectedPresetName) != null;
+            _deletePresetButton.SetEnabled(deletable);
+        }
+
+        private void OnPresetSelected(string name)
+        {
+            var preset = CPritch.DepthForge.Editor.Data.PresetStore.Find(name);
+            if (preset == null) return;
+            _selectedPresetName = name;
+            ApplyPreset(preset);
+            SetPresetDirty(false); // just applied — matches the preset
+            UpdateDeletePresetButton();
+        }
+
+        private void ApplyPreset(CPritch.DepthForge.Editor.Data.Preset preset)
+        {
+            if (preset?.recipe == null) return;
+            var r = preset.recipe;
+
+            // Overlay only the tuning fields — generation settings stay as the user set them.
+            if (_invertToggle != null) _invertToggle.SetValueWithoutNotify(r.invert);
+            if (_contrastSlider != null) _contrastSlider.SetValueWithoutNotify(r.contrast);
+            if (_midpointSlider != null) _midpointSlider.SetValueWithoutNotify(r.midpoint);
+            if (_flattenSlider != null) _flattenSlider.SetValueWithoutNotify(r.flatten);
+            if (_exportNormalToggle != null) _exportNormalToggle.SetValueWithoutNotify(r.exportNormal);
+            if (_normalStrengthSlider != null)
+            {
+                _normalStrengthSlider.SetValueWithoutNotify(r.normalStrength);
+                _normalStrengthSlider.SetEnabled(r.exportNormal);
+            }
+            if (_exportAOToggle != null) _exportAOToggle.SetValueWithoutNotify(r.exportAO);
+            if (_aoStrengthSlider != null)
+            {
+                _aoStrengthSlider.SetValueWithoutNotify(r.aoStrength);
+                _aoStrengthSlider.SetEnabled(r.exportAO);
+            }
+            if (_outputFormatField != null) _outputFormatField.SetValueWithoutNotify(r.format);
+
+            // aoRadius has no UI control — carry it onto the focused job so it survives export.
+            if (_currentJob != null) _currentJob.recipe.aoRadius = r.aoRadius;
+
+            // Re-derive the adjusted preview (which also invalidates cached Normal/AO maps).
+            if (_rawHeightmap != null) UpdateAdjustedHeightmap();
+            else { InvalidateMapPreviews(); RefreshActiveTab(); }
+            Repaint();
+        }
+
+        /// <summary>Compares the live tuning UI against the selected preset and shows/hides the * marker.</summary>
+        private void RecomputePresetDirty()
+        {
+            var preset = CPritch.DepthForge.Editor.Data.PresetStore.Find(_selectedPresetName);
+            bool dirty = preset != null && !UiTuningMatches(preset.recipe);
+            SetPresetDirty(dirty);
+        }
+
+        private void SetPresetDirty(bool dirty)
+        {
+            if (_presetDirtyMarker != null) _presetDirtyMarker.EnableInClassList("hidden", !dirty);
+
+            // Overwrite only makes sense for a dirty *user* preset; built-ins are read-only.
+            bool isUserPreset = !string.IsNullOrEmpty(_selectedPresetName)
+                && !CPritch.DepthForge.Editor.Data.PresetStore.IsBuiltin(_selectedPresetName)
+                && CPritch.DepthForge.Editor.Data.PresetStore.Find(_selectedPresetName) != null;
+            _savePresetButton?.SetEnabled(dirty && isUserPreset);
+        }
+
+        private bool UiTuningMatches(CPritch.DepthForge.Editor.Data.Recipe r)
+        {
+            if (r == null) return false;
+            const float eps = 0.0001f;
+            if (_invertToggle != null && _invertToggle.value != r.invert) return false;
+            if (_contrastSlider != null && Mathf.Abs(_contrastSlider.value - r.contrast) > eps) return false;
+            if (_midpointSlider != null && Mathf.Abs(_midpointSlider.value - r.midpoint) > eps) return false;
+            if (_flattenSlider != null && Mathf.Abs(_flattenSlider.value - r.flatten) > eps) return false;
+            if (_exportNormalToggle != null && _exportNormalToggle.value != r.exportNormal) return false;
+            if (_normalStrengthSlider != null && Mathf.Abs(_normalStrengthSlider.value - r.normalStrength) > eps) return false;
+            if (_exportAOToggle != null && _exportAOToggle.value != r.exportAO) return false;
+            if (_aoStrengthSlider != null && Mathf.Abs(_aoStrengthSlider.value - r.aoStrength) > eps) return false;
+            if (_outputFormatField != null &&
+                (CPritch.DepthForge.Editor.Utils.TextureExporter.ExportFormat)_outputFormatField.value != r.format) return false;
+            return true;
+        }
+
+        /// <summary>Save icon — overwrites the currently selected (user) preset with the live settings.</summary>
+        private void OverwritePreset()
+        {
+            if (string.IsNullOrEmpty(_selectedPresetName) || CPritch.DepthForge.Editor.Data.PresetStore.IsBuiltin(_selectedPresetName))
+            {
+                EditorUtility.DisplayDialog("Save Preset",
+                    "Built-in presets can't be overwritten. Use Save As (+) to create your own.", "OK");
+                return;
+            }
+            var recipe = BuildRecipeFromUI();
+            CPritch.DepthForge.Editor.Data.PresetStore.SaveUserPreset(_selectedPresetName, recipe);
+            RefreshPresetDropdown(_selectedPresetName); // recompute → no longer dirty
+        }
+
+        /// <summary>Save-as (+) icon — saves the live settings as a new named user preset.</summary>
+        private void SaveAsNewPreset()
+        {
+            string name = _presetNameField != null ? _presetNameField.value : null;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                EditorUtility.DisplayDialog("Save As New Preset", "Enter a name in the Save As field first.", "OK");
+                return;
+            }
+            name = name.Trim();
+            if (CPritch.DepthForge.Editor.Data.PresetStore.IsBuiltin(name))
+            {
+                EditorUtility.DisplayDialog("Save As New Preset",
+                    $"'{name}' is a built-in preset name. Choose a different name.", "OK");
+                return;
+            }
+            if (CPritch.DepthForge.Editor.Data.PresetStore.Find(name) != null &&
+                !EditorUtility.DisplayDialog("Save As New Preset",
+                    $"A preset named '{name}' already exists. Overwrite it?", "Overwrite", "Cancel"))
+            {
+                return;
+            }
+
+            var recipe = BuildRecipeFromUI();
+            if (!CPritch.DepthForge.Editor.Data.PresetStore.SaveUserPreset(name, recipe))
+            {
+                EditorUtility.DisplayDialog("Save As New Preset", "Could not save the preset.", "OK");
+                return;
+            }
+            _presetNameField?.SetValueWithoutNotify(string.Empty);
+            RefreshPresetDropdown(name);
+        }
+
+        private void DeletePreset()
+        {
+            if (string.IsNullOrEmpty(_selectedPresetName) || CPritch.DepthForge.Editor.Data.PresetStore.IsBuiltin(_selectedPresetName))
+            {
+                EditorUtility.DisplayDialog("Delete Preset",
+                    "Built-in presets can't be deleted. Select a saved preset to delete.", "OK");
+                return;
+            }
+            if (!EditorUtility.DisplayDialog("Delete Preset", $"Delete the preset '{_selectedPresetName}'?", "Delete", "Cancel")) return;
+
+            CPritch.DepthForge.Editor.Data.PresetStore.DeleteUserPreset(_selectedPresetName);
+            RefreshPresetDropdown(CPritch.DepthForge.Editor.Data.PresetStore.DefaultName);
+        }
+
         private void UpdateAdjustedHeightmap()
         {
             if (_rawHeightmap == null) return;
@@ -1190,7 +1417,9 @@ namespace CPritch.DepthForge.Editor
 
         private CPritch.DepthForge.Editor.Data.Recipe BuildRecipeFromUI()
         {
-            var r = new CPritch.DepthForge.Editor.Data.Recipe();
+            // Start from the focused job's recipe so fields without a UI control (e.g. aoRadius,
+            // carried by presets) survive the round-trip; UI values overlay on top.
+            var r = _currentJob != null ? _currentJob.recipe.Clone() : new CPritch.DepthForge.Editor.Data.Recipe();
             if (_modelSizeField != null) r.modelSize = (CPritch.DepthForge.Editor.Data.DepthModelSize)(int)(ModelSize)_modelSizeField.value;
             if (_backendField != null) r.backend = (CPritch.DepthForge.Editor.Data.InferenceBackendChoice)(int)(InferenceBackend)_backendField.value;
             if (_tiledInferenceToggle != null) r.tiledInference = _tiledInferenceToggle.value;
@@ -1241,6 +1470,8 @@ namespace CPritch.DepthForge.Editor
             if (_outputFormatField != null) _outputFormatField.SetValueWithoutNotify(r.format);
             // Refresh the derived preview only if a heightmap already exists for this source.
             if (_rawHeightmap != null) UpdateAdjustedHeightmap();
+            // The loaded recipe may diverge from the selected preset — reflect that in the * marker.
+            RecomputePresetDirty();
         }
 
         private void UpdatePreviewMesh()
