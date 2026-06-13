@@ -49,6 +49,9 @@ namespace CPritch.DepthForge.Editor
             }
             catch (Exception ex)
             {
+                // TODO(batch-error-channel, higher priority): this only logs to the console — the user
+                // sees nothing in-window when batch init fails (e.g. the selected model size isn't
+                // downloaded yet). Add an onError callback so the window can surface it (dialog/status row).
                 Debug.LogError($"[DepthForge] Batch init failed: {ex.Message}");
                 _onAllDone?.Invoke();
                 return;

@@ -8,11 +8,11 @@ namespace CPritch.DepthForge.Editor.Utils
     {
         public enum ExportFormat
         {
-            PNG_8Bit,
-            EXR_16Bit,
-            // MicroSplat often uses packed textures. We'll add standard formats for now
-            // and can add specific channel packing later.
-            MicroSplat_Height
+            [InspectorName("PNG (8-bit)")]
+            PNG_8Bit
+            // EXR (true 16-bit) is parked: the map pipeline is 8-bit Color32 end to end, so an EXR
+            // export today would only be an 8-bit-quantised container — misleading. Re-add once
+            // height is carried as float through postprocess/adjustments (see docs/roadmap.md §5).
         }
 
         public static string SaveHeightmap(Texture2D generatedTexture, Texture2D sourceTexture, ExportFormat format)
@@ -32,29 +32,11 @@ namespace CPritch.DepthForge.Editor.Utils
 
             string directory = Path.GetDirectoryName(sourcePath);
             string filename = Path.GetFileNameWithoutExtension(sourcePath) + "_Height";
-            
-            string extension = format == ExportFormat.EXR_16Bit ? ".exr" : ".png";
-            string savePath = Path.Combine(directory, filename + extension);
-            
-            // Normalize path separators
-            savePath = savePath.Replace("\\", "/");
 
-            byte[] bytes;
-            if (format == ExportFormat.EXR_16Bit)
-            {
-                // Unity's EncodeToEXR fails or outputs flat black if the texture is not an HDR format
-                Texture2D hdrTex = new Texture2D(generatedTexture.width, generatedTexture.height, TextureFormat.RGBAHalf, false, true);
-                hdrTex.SetPixels(generatedTexture.GetPixels());
-                hdrTex.Apply();
-                bytes = ImageConversion.EncodeToEXR(hdrTex, Texture2D.EXRFlags.CompressZIP);
-                UnityEngine.Object.DestroyImmediate(hdrTex);
-            }
-            else
-            {
-                // Both PNG_8Bit and MicroSplat_Height will use PNG for now
-                // Later we can implement custom channel packing for MicroSplat if required.
-                bytes = ImageConversion.EncodeToPNG(generatedTexture);
-            }
+            // PNG only for now (see ExportFormat). The `format` param is retained so the call sites
+            // stay stable for when higher-precision formats return.
+            string savePath = Path.Combine(directory, filename + ".png").Replace("\\", "/");
+            byte[] bytes = ImageConversion.EncodeToPNG(generatedTexture);
 
             File.WriteAllBytes(savePath, bytes);
             AssetDatabase.Refresh();

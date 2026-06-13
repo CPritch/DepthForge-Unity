@@ -13,7 +13,7 @@ namespace CPritch.DepthForge.Editor
 {
     public class DepthForgeWindow : EditorWindow
     {
-        [MenuItem("Tools/DepthForge/Heightmap Generator")]
+        [MenuItem("Tools/DepthForge/Material Map Generator")]
         public static void ShowExample()
         {
             DepthForgeWindow wnd = GetWindow<DepthForgeWindow>();
@@ -279,6 +279,14 @@ namespace CPritch.DepthForge.Editor
         {
             if (_inScenePreviewObject != null)
             {
+                // The spawned object owns a Material created in OnPreviewMeshClicked; destroy it so it
+                // doesn't leak (one per spawn). The mesh is the shared _previewMesh — cleaned up
+                // separately, so leave it alone here.
+                var renderer = _inScenePreviewObject.GetComponent<MeshRenderer>();
+                if (renderer != null && renderer.sharedMaterial != null)
+                {
+                    DestroyImmediate(renderer.sharedMaterial);
+                }
                 DestroyImmediate(_inScenePreviewObject);
                 _inScenePreviewObject = null;
             }
@@ -292,7 +300,7 @@ namespace CPritch.DepthForge.Editor
                 CleanupScenePreview();
                 if (_previewMeshButton != null)
                 {
-                    _previewMeshButton.text = "Spawn Preview Mesh";
+                    _previewMeshButton.text = "Preview Mesh";
                 }
             }
         }
@@ -899,7 +907,7 @@ namespace CPritch.DepthForge.Editor
             if (_generateButton != null)
             {
                 _generateButton.SetEnabled(true);
-                _generateButton.text = "Generate Heightmap";
+                _generateButton.text = "Generate";
             }
         }
 
@@ -1672,7 +1680,7 @@ namespace CPritch.DepthForge.Editor
             if (_inScenePreviewObject != null)
             {
                 CleanupScenePreview();
-                if (_previewMeshButton != null) _previewMeshButton.text = "Spawn Preview Mesh";
+                if (_previewMeshButton != null) _previewMeshButton.text = "Preview Mesh";
                 return;
             }
 
@@ -1707,7 +1715,7 @@ namespace CPritch.DepthForge.Editor
             
             Selection.activeGameObject = _inScenePreviewObject;
 
-            if (_previewMeshButton != null) _previewMeshButton.text = "Clear Preview Mesh";
+            if (_previewMeshButton != null) _previewMeshButton.text = "Clear Preview";
         }
 
         private bool IsMicroSplatPresent()

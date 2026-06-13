@@ -55,18 +55,18 @@
                 </ui:Foldout>
 
                 <ui:Foldout text="Adjustments" value="true" class="df-foldout">
-                    <ui:Slider name="strengthSlider" label="3D Preview Strength" start-value="0.1" end-value="3.0" value="1.0" />
-                    <ui:Slider name="contrastSlider" label="Contrast" start-value="0.1" end-value="3.0" value="1.0" />
-                    <ui:Slider name="midpointSlider" label="Midpoint" start-value="0.0" end-value="1.0" value="0.5" />
-                    <ui:Slider name="flattenSlider" label="Flatten Shape (High-Pass)" start-value="0.0" end-value="1.0" value="0.0" />
+                    <ui:Slider name="strengthSlider" label="3D Preview Strength" low-value="0.1" high-value="3.0" value="1.0" />
+                    <ui:Slider name="contrastSlider" label="Contrast" low-value="0.1" high-value="3.0" value="1.0" />
+                    <ui:Slider name="midpointSlider" label="Midpoint" low-value="0.0" high-value="1.0" value="0.5" />
+                    <ui:Slider name="flattenSlider" label="Flatten Shape (High-Pass)" low-value="0.0" high-value="1.0" value="0.0" />
                     <ui:Toggle name="invertToggle" label="Invert Heightmap" value="true" />
                 </ui:Foldout>
 
                 <ui:Foldout text="Maps" value="true" class="df-foldout">
                     <ui:Toggle name="exportNormalToggle" label="Also Generate Normal Map" value="true" />
-                    <ui:Slider name="normalStrengthSlider" label="Normal Strength" start-value="1.0" end-value="20.0" value="8.0" />
+                    <ui:Slider name="normalStrengthSlider" label="Normal Strength" low-value="1.0" high-value="20.0" value="8.0" />
                     <ui:Toggle name="exportAOToggle" label="Also Generate AO Map" value="true" />
-                    <ui:Slider name="aoStrengthSlider" label="AO Strength" start-value="0.0" end-value="3.0" value="1.0" />
+                    <ui:Slider name="aoStrengthSlider" label="AO Strength" low-value="0.0" high-value="3.0" value="1.0" />
                     <ui:Toggle name="exportRoughnessToggle" label="Also Export Roughness Map" tooltip="Only available when the active model produces roughness natively (the DepthForge material model)." value="true" />
                 </ui:Foldout>
 
@@ -90,11 +90,11 @@
 
         <!-- FOOTER: actions for the focused source -->
         <ui:VisualElement class="footer">
-            <ui:Button name="generateButton" text="Generate Heightmap" class="generate-button" />
+            <ui:Button name="generateButton" text="Generate" class="generate-button" />
             <ui:ProgressBar name="progressBar" class="hidden" />
             <ui:VisualElement class="action-buttons-row">
-                <ui:Button name="saveButton" text="Save Heightmap" class="action-button save-button" />
-                <ui:Button name="previewMeshButton" text="Spawn Preview Mesh" class="action-button preview-mesh-button" />
+                <ui:Button name="saveButton" text="Export" class="action-button save-button" />
+                <ui:Button name="previewMeshButton" text="Preview Mesh" class="action-button preview-mesh-button" />
             </ui:VisualElement>
         </ui:VisualElement>
     </ui:VisualElement>

@@ -1,31 +1,3 @@
-.container {
-    flex-grow: 1;
-    padding: 10px;
-    background-color: var(--unity-colors-window-background);
-}
-
-.header {
-    font-size: 22px;
-    -unity-font-style: bold;
-    margin-bottom: 2px;
-    color: var(--unity-colors-label-text);
-}
-
-.subtitle {
-    font-size: 11px;
-    margin-bottom: 12px;
-    color: var(--unity-colors-label-text-idle);
-}
-
-.section {
-    margin-bottom: 12px;
-    padding: 10px;
-    background-color: rgba(0, 0, 0, 0.15);
-    border-radius: 5px;
-    border-width: 1px;
-    border-color: rgba(255, 255, 255, 0.05);
-}
-
 .section-header {
     -unity-font-style: bold;
     margin-bottom: 8px;
@@ -104,26 +76,19 @@
     background-repeat: no-repeat;
 }
 
-.preview-divider {
-    width: 2px;
-    background-color: rgba(255, 255, 255, 0.05);
-    margin-top: 10px;
-    margin-bottom: 10px;
-}
-
 .footer {
-    margin-top: 10px;
+    margin-top: 6px;
 }
 
 .generate-button {
-    height: 38px;
+    height: 30px;
     -unity-font-style: bold;
-    font-size: 14px;
+    font-size: 13px;
     background-color: #2d5a27;
     color: white;
     border-radius: 4px;
     border-width: 0;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
 }
 
 .generate-button:hover {
@@ -141,9 +106,9 @@
 
 .action-button {
     flex-grow: 1;
-    height: 32px;
+    height: 26px;
     -unity-font-style: bold;
-    font-size: 12px;
+    font-size: 11px;
     border-radius: 4px;
     border-width: 0;
     margin: 2px;

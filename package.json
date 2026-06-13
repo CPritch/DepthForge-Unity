@@ -2,9 +2,8 @@
   "name": "com.cpritch.depthforge",
   "version": "0.1.0",
   "displayName": "DepthForge",
-  "description": "AI-powered material map generator for Unity: turn a single texture into Height, Normal, Roughness and AO maps with a local, commercial-clean model. Compatible with MicroSplat and SPOM.",
-  "unity": "2023.2",
-  "unityRelease": "0a1",
+  "description": "Turn any texture into Height, Normal, Roughness and AO maps with a local, commercial-clean AI model. 100% offline and private, batch-capable, with optional one-click assignment into MicroSplat.",
+  "unity": "6000.0",
   "dependencies": {
     "com.unity.ai.inference": "2.2.0"
   },

@@ -88,7 +88,10 @@ namespace CPritch.DepthForge.Editor.Inference.Providers
                 p => onProgress?.Invoke(p * 0.05f, $"Downloading depth model (structure) ({(int)(p * 100)}%)..."),
                 structErr =>
                 {
-                    if (_download != null && _download.IsCancelled) return;
+                    // Match on the cancel sentinel rather than the _download flag: Dispose() nulls
+                    // _download before this callback fires (e.g. window closed mid-download), so the
+                    // flag check would mis-report a cancel as a failure and pop a dialog on a dead window.
+                    if (structErr == "Download cancelled.") return;
                     if (!string.IsNullOrEmpty(structErr)) { onError?.Invoke($"Failed to download model structure: {structErr}"); return; }
 
                     _download = ModelDownloader.DownloadModel(loc.dataUrl, loc.dataPath,
