@@ -1,0 +1,43 @@
+DepthForge — Third-Party Notices
+================================
+
+This package and the model it ships are built only on components that are clean
+for commercial use. Components under non-commercial or research-only licenses are
+NEVER shipped and never contribute training signal to the shipped model (they are
+used, if at all, only as private visual reference of theoretical limits).
+
+-------------------------------------------------------------------------------
+Shipped model lineage (commercial-clean)
+-------------------------------------------------------------------------------
+
+DINOv2 (image backbone)
+  License: Apache License 2.0
+  Copyright (c) Meta Platforms, Inc. and affiliates.
+  The full Apache 2.0 license text must be reproduced below before release.
+  [TODO: paste the Apache-2.0 license text here.]
+
+MatSynth dataset (training data)
+  Subset used: CC0 1.0 (Public Domain Dedication) only.
+  A small CC-BY portion of MatSynth exists and is NOT used unless its attribution
+  terms are met; the training pipeline strictly filters to the CC0 subset.
+  Source: https://huggingface.co/datasets/gvecchio/MatSynth
+  [TODO: record the per-source CC0 provenance map before release.]
+
+-------------------------------------------------------------------------------
+Explicitly excluded (never shipped, never a training signal)
+-------------------------------------------------------------------------------
+
+Depth Anything V3
+  License: CC-BY-NC (non-commercial).
+  Included in development builds ONLY as an in-editor reference provider, compiled
+  out of shippable builds via the DEPTHFORGE_SHIPPING scripting define. Its weights
+  are downloaded on demand to the user's project and are never redistributed in
+  this package.
+
+-------------------------------------------------------------------------------
+AI disclosure
+-------------------------------------------------------------------------------
+
+DepthForge generates material maps using a machine-learning model that runs
+locally in the Unity Editor. This must be disclosed in the Asset Store listing per
+the Submission Guidelines (§1.1.b on AI-generated content).

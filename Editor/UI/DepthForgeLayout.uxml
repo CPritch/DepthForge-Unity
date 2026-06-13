@@ -24,6 +24,7 @@
                     <ui:Button name="tabSource" text="Source" class="tab-button" />
                     <ui:Button name="tabHeight" text="Height" class="tab-button active-tab" />
                     <ui:Button name="tabNormal" text="Normal" class="tab-button" />
+                    <ui:Button name="tabRoughness" text="Roughness" class="tab-button" />
                     <ui:Button name="tabAO" text="AO" class="tab-button" />
                     <ui:Button name="tab3D" text="3D" class="tab-button" />
                 </ui:VisualElement>
@@ -66,6 +67,7 @@
                     <ui:Slider name="normalStrengthSlider" label="Normal Strength" start-value="1.0" end-value="20.0" value="8.0" />
                     <ui:Toggle name="exportAOToggle" label="Also Generate AO Map" value="true" />
                     <ui:Slider name="aoStrengthSlider" label="AO Strength" start-value="0.0" end-value="3.0" value="1.0" />
+                    <ui:Toggle name="exportRoughnessToggle" label="Also Export Roughness Map" tooltip="Only available when the active model produces roughness natively (the DepthForge material model)." value="true" />
                 </ui:Foldout>
 
                 <ui:Foldout text="Export" value="false" class="df-foldout">
@@ -75,6 +77,7 @@
                 </ui:Foldout>
 
                 <ui:Foldout text="Generation (Advanced)" value="false" class="df-foldout">
+                    <ui:DropdownField name="providerField" label="Model" />
                     <ui:EnumField name="modelSizeField" label="Model Size" />
                     <ui:EnumField name="backendField" label="Inference Backend" />
                     <ui:Toggle name="letterboxToggle" label="Letterbox (Preserve Aspect)" value="true" />

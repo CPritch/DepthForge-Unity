@@ -20,6 +20,10 @@ namespace CPritch.DepthForge.Editor.Data
     {
         public int version = 1;
 
+        // Which model produced (or should produce) this recipe's maps. Empty => registry default.
+        // Persisted so a source remembers its provenance across providers (see ProviderRegistry).
+        public string providerId = "";
+
         // Generation
         public DepthModelSize modelSize = DepthModelSize.Small;
         public InferenceBackendChoice backend = InferenceBackendChoice.Auto;
@@ -39,6 +43,7 @@ namespace CPritch.DepthForge.Editor.Data
         public bool exportAO = true;    // R4 — part of the complete H+N+AO launch map set
         public float aoStrength = 1f;
         public float aoRadius = 0.02f;
+        public bool exportRoughness = true; // only emitted when the active provider produces roughness natively
 
         // Export
         public TextureExporter.ExportFormat format = TextureExporter.ExportFormat.PNG_8Bit;

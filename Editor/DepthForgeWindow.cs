@@ -105,31 +105,10 @@ namespace CPritch.DepthForge.Editor
             LinearRegressionDownscaled
         }
 
-        private const string MODEL_SMALL_URL = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx";
-        private const string MODEL_SMALL_DATA_URL = "https://huggingface.co/onnx-community/depth-anything-v3-small/resolve/main/onnx/model.onnx_data";
-        
-        private const string MODEL_BASE_URL = "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx";
-        private const string MODEL_BASE_DATA_URL = "https://huggingface.co/onnx-community/depth-anything-v3-base/resolve/main/onnx/model.onnx_data";
-
-        private const string MODEL_LARGE_URL = "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx";
-        private const string MODEL_LARGE_DATA_URL = "https://huggingface.co/onnx-community/depth-anything-v3-large/resolve/main/onnx/model.onnx_data";
-
-        private const string MODEL_CACHE_DIR = "Assets/DepthForge/Models";
-        private const string MODEL_SMALL_DIR = "Assets/DepthForge/Models/Small";
-        private const string MODEL_BASE_DIR = "Assets/DepthForge/Models/Base";
-        private const string MODEL_LARGE_DIR = "Assets/DepthForge/Models/Large";
-
-        private const string MODEL_SMALL_PATH = "Assets/DepthForge/Models/Small/model.onnx";
-        private const string MODEL_SMALL_DATA_PATH = "Assets/DepthForge/Models/Small/model.onnx_data";
-
-        private const string MODEL_BASE_PATH = "Assets/DepthForge/Models/Base/model.onnx";
-        private const string MODEL_BASE_DATA_PATH = "Assets/DepthForge/Models/Base/model.onnx_data";
-
-        private const string MODEL_LARGE_PATH = "Assets/DepthForge/Models/Large/model.onnx";
-        private const string MODEL_LARGE_DATA_PATH = "Assets/DepthForge/Models/Large/model.onnx_data";
-
-        // Runner and UI Fields
-        private DepthInferenceRunner _runner;
+        // Map providers (R11): inference is decoupled behind IMapProvider. _provider is the focused one.
+        private System.Collections.Generic.List<IMapProvider> _providers;
+        private IMapProvider _provider;
+        private DropdownField _providerField;
         // Phase 1 (R1): the current source/recipe/state as a Job. The UI still edits live for now;
         // this carries persistence (sidecar) and seeds the future batch queue.
         private CPritch.DepthForge.Editor.Data.Job _currentJob;
@@ -148,6 +127,7 @@ namespace CPritch.DepthForge.Editor
         private Toggle _invertToggle;
         private Toggle _exportNormalToggle;
         private Toggle _exportAOToggle;
+        private Toggle _exportRoughnessToggle;
         private Toggle _autoAssignToggle;
         private Toggle _tiledInferenceToggle;
         private Toggle _letterboxToggle;
@@ -156,15 +136,19 @@ namespace CPritch.DepthForge.Editor
         private Label _microSplatStatusLabel;
 
         // Tabs & Viewports
-        private enum PreviewTab { Source, Height, Normal, AO, ThreeD }
+        private enum PreviewTab { Source, Height, Normal, Roughness, AO, ThreeD }
         private PreviewTab _activeTab = PreviewTab.Height;
         private Button _tabSource;
         private Button _tabHeight;
         private Button _tabNormal;
+        private Button _tabRoughness;
         private Button _tabAO;
         private Button _tab3D;
-        private Texture2D _normalPreview;
+        private Texture2D _normalPreview;   // derived-from-height normal (depth-style providers)
         private Texture2D _aoPreview;
+        // Native model outputs for the focused source (owned here); independent of height tuning.
+        private Texture2D _nativeNormal;
+        private Texture2D _nativeRoughness;
         private VisualElement _previewControls3D;
         private VisualElement _outputPreview2D;
         private IMGUIContainer _outputPreview3D;
@@ -193,9 +177,6 @@ namespace CPritch.DepthForge.Editor
         private Label _batchStatusLabel;
         private BatchProcessor _batch;
 
-        // Downloader
-        private DownloadHandle _downloadHandle;
-
         // 3D Preview State
         private Texture2D _rawHeightmap;
         private Texture2D _adjustedHeightmap;
@@ -211,20 +192,20 @@ namespace CPritch.DepthForge.Editor
 
         private void OnEnable()
         {
-            _runner = new DepthInferenceRunner();
+            _providers = ProviderRegistry.CreateAll();
+            _provider = ProviderRegistry.Default(_providers);
             Selection.selectionChanged += OnSelectionChanged;
         }
 
         private void OnDisable()
         {
-            _runner?.Dispose();
-            Selection.selectionChanged -= OnSelectionChanged;
-            
-            if (_downloadHandle != null)
+            if (_providers != null)
             {
-                _downloadHandle.Cancel();
-                _downloadHandle = null;
+                foreach (var p in _providers) p?.Dispose();
+                _providers = null;
+                _provider = null;
             }
+            Selection.selectionChanged -= OnSelectionChanged;
 
             CleanupPreviewResources();
         }
@@ -253,6 +234,18 @@ namespace CPritch.DepthForge.Editor
             {
                 DestroyImmediate(_aoPreview);
                 _aoPreview = null;
+            }
+
+            if (_nativeNormal != null)
+            {
+                DestroyImmediate(_nativeNormal);
+                _nativeNormal = null;
+            }
+
+            if (_nativeRoughness != null)
+            {
+                DestroyImmediate(_nativeRoughness);
+                _nativeRoughness = null;
             }
 
             if (_previewMesh != null)
@@ -309,6 +302,7 @@ namespace CPritch.DepthForge.Editor
             // Core controls
             _generateButton = root.Q<Button>("generateButton");
             _inputTextureField = root.Q<ObjectField>("inputTextureField");
+            _providerField = root.Q<DropdownField>("providerField");
             _modelSizeField = root.Q<EnumField>("modelSizeField");
             _backendField = root.Q<EnumField>("backendField");
             _outputFormatField = root.Q<EnumField>("outputFormatField");
@@ -364,10 +358,13 @@ namespace CPritch.DepthForge.Editor
                 _exportAOToggle.RegisterValueChangedCallback(evt => _aoStrengthSlider.SetEnabled(evt.newValue));
             }
 
+            _exportRoughnessToggle = root.Q<Toggle>("exportRoughnessToggle");
+
             // Tabs & Preview
             _tabSource = root.Q<Button>("tabSource");
             _tabHeight = root.Q<Button>("tabHeight");
             _tabNormal = root.Q<Button>("tabNormal");
+            _tabRoughness = root.Q<Button>("tabRoughness");
             _tabAO = root.Q<Button>("tabAO");
             _tab3D = root.Q<Button>("tab3D");
             _previewControls3D = root.Q<VisualElement>("previewControls3D");
@@ -386,6 +383,17 @@ namespace CPritch.DepthForge.Editor
             {
                 _progressBar.lowValue = 0f;
                 _progressBar.highValue = 1f;
+            }
+
+            // Provider dropdown (R11): lists the available providers; reference (non-commercial) ones
+            // carry that label and are compiled out of shippable builds.
+            if (_providerField != null && _providers != null)
+            {
+                var names = new List<string>(_providers.Count);
+                foreach (var p in _providers) names.Add(p.Info.displayName);
+                _providerField.choices = names;
+                _providerField.SetValueWithoutNotify(_provider != null ? _provider.Info.displayName : (names.Count > 0 ? names[0] : null));
+                _providerField.RegisterValueChangedCallback(evt => OnProviderSelected(evt.newValue));
             }
 
             if (_modelSizeField != null)
@@ -540,6 +548,7 @@ namespace CPritch.DepthForge.Editor
             if (_tabSource != null) _tabSource.clicked += () => SetPreviewTab(PreviewTab.Source);
             if (_tabHeight != null) _tabHeight.clicked += () => SetPreviewTab(PreviewTab.Height);
             if (_tabNormal != null) _tabNormal.clicked += () => SetPreviewTab(PreviewTab.Normal);
+            if (_tabRoughness != null) _tabRoughness.clicked += () => SetPreviewTab(PreviewTab.Roughness);
             if (_tabAO != null) _tabAO.clicked += () => SetPreviewTab(PreviewTab.AO);
             if (_tab3D != null) _tab3D.clicked += () => SetPreviewTab(PreviewTab.ThreeD);
 
@@ -650,7 +659,50 @@ namespace CPritch.DepthForge.Editor
                     Draw3DPreview(localRect);
                 };
             }
+
+            UpdateProviderDependentUI();
         }
+
+        // ---- Providers (R11) ----------------------------------------------------------------
+
+        private void OnProviderSelected(string displayName)
+        {
+            if (_providers == null) return;
+            foreach (var p in _providers)
+            {
+                if (p.Info.displayName == displayName) { _provider = p; break; }
+            }
+            UpdateProviderDependentUI();
+        }
+
+        /// <summary>Shows/hides controls that only make sense for certain providers: the Roughness
+        /// preview tab + export toggle (native-roughness providers only), and the Depth-Anything-only
+        /// tiling/letterbox/model-size controls.</summary>
+        private void UpdateProviderDependentUI()
+        {
+            bool hasRoughness = _provider != null && (_provider.NativeMaps & MapKinds.Roughness) != 0;
+            bool isDepthStyle = _provider != null && _provider.NativeMaps == MapKinds.Height; // Depth Anything
+
+            ShowElement(_tabRoughness, hasRoughness);
+            ShowRow(_exportRoughnessToggle, hasRoughness);
+
+            // DA-specific generation controls; the material model handles sizing/tiling internally.
+            ShowRow(_modelSizeField, isDepthStyle);
+            ShowRow(_tiledInferenceToggle, isDepthStyle);
+            ShowRow(_letterboxToggle, isDepthStyle);
+            ShowRow(_tilingAlignmentField, isDepthStyle);
+
+            // If the hidden Roughness tab was active, fall back to Height.
+            if (!hasRoughness && _activeTab == PreviewTab.Roughness) SetPreviewTab(PreviewTab.Height);
+        }
+
+        private static void ShowElement(VisualElement el, bool show)
+        {
+            if (el != null) el.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        // EnumField/Toggle rows carry their label on the element itself, so toggle the element directly.
+        private static void ShowRow(VisualElement el, bool show) => ShowElement(el, show);
 
         private void SetActionButtonsEnabled(bool enabled)
         {
@@ -665,6 +717,7 @@ namespace CPritch.DepthForge.Editor
             _tabSource?.EnableInClassList("active-tab", tab == PreviewTab.Source);
             _tabHeight?.EnableInClassList("active-tab", tab == PreviewTab.Height);
             _tabNormal?.EnableInClassList("active-tab", tab == PreviewTab.Normal);
+            _tabRoughness?.EnableInClassList("active-tab", tab == PreviewTab.Roughness);
             _tabAO?.EnableInClassList("active-tab", tab == PreviewTab.AO);
             _tab3D?.EnableInClassList("active-tab", tab == PreviewTab.ThreeD);
 
@@ -695,6 +748,7 @@ namespace CPritch.DepthForge.Editor
                 case PreviewTab.Source: tex = _inputTextureField?.value as Texture2D; break;
                 case PreviewTab.Height: tex = _adjustedHeightmap; break;
                 case PreviewTab.Normal: tex = EnsureNormalPreview(); break;
+                case PreviewTab.Roughness: tex = _nativeRoughness; break;
                 case PreviewTab.AO: tex = EnsureAOPreview(); break;
             }
             _outputPreview2D.style.backgroundImage = tex;
@@ -702,6 +756,9 @@ namespace CPritch.DepthForge.Editor
 
         private Texture2D EnsureNormalPreview()
         {
+            // Prefer the provider's native normal (independent of the height tuning sliders); only
+            // depth-style providers (Depth Anything) fall through to a derived-from-height normal.
+            if (_nativeNormal != null) return _nativeNormal;
             if (_adjustedHeightmap == null) return null;
             if (_normalPreview == null)
             {
@@ -738,224 +795,51 @@ namespace CPritch.DepthForge.Editor
                 EditorUtility.DisplayDialog("Missing references", "Please assign a Base Map texture.", "OK");
                 return;
             }
-
-            ModelSize selectedSize = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
-            string modelPath = MODEL_SMALL_PATH;
-            string modelDataPath = MODEL_SMALL_DATA_PATH;
-
-            if (selectedSize == ModelSize.Base)
+            if (_provider == null)
             {
-                modelPath = MODEL_BASE_PATH;
-                modelDataPath = MODEL_BASE_DATA_PATH;
-            }
-            else if (selectedSize == ModelSize.Large)
-            {
-                modelPath = MODEL_LARGE_PATH;
-                modelDataPath = MODEL_LARGE_DATA_PATH;
+                EditorUtility.DisplayDialog("No model", "No inference provider is available.", "OK");
+                return;
             }
 
-            if (!File.Exists(modelPath) || !File.Exists(modelDataPath))
+            CPritch.DepthForge.Editor.Data.Recipe recipe = BuildRecipeFromUI();
+
+            // The provider owns availability + (its own) download. Drive its progress through our
+            // non-modal bar, then run inference once it reports ready.
+            if (_generateButton != null) _generateButton.SetEnabled(false);
+            if (_progressBar != null)
             {
-                StartModelDownload(inputTex, selectedSize);
+                _progressBar.RemoveFromClassList("hidden");
+                _progressBar.value = 0f;
+                _progressBar.title = "Preparing model...";
             }
-            else
-            {
-                ModelAsset modelAsset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
-                if (modelAsset == null)
+
+            _provider.PrepareAsync(recipe,
+                (p, status) =>
                 {
-                    AssetDatabase.ImportAsset(modelPath);
-                    AssetDatabase.Refresh();
-                    modelAsset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
-                }
-
-                if (modelAsset == null)
-                {
-                    StartModelDownload(inputTex, selectedSize);
-                }
-                else
-                {
-                    RunInference(inputTex, modelAsset);
-                }
-            }
-        }
-
-        private void StartModelDownload(Texture2D inputTex, ModelSize size)
-        {
-            EnsureGitIgnore();
-
-            string modelUrl = MODEL_SMALL_URL;
-            string modelDataUrl = MODEL_SMALL_DATA_URL;
-            string modelPath = MODEL_SMALL_PATH;
-            string modelDataPath = MODEL_SMALL_DATA_PATH;
-            string modelDir = MODEL_SMALL_DIR;
-
-            if (size == ModelSize.Base)
-            {
-                modelUrl = MODEL_BASE_URL;
-                modelDataUrl = MODEL_BASE_DATA_URL;
-                modelPath = MODEL_BASE_PATH;
-                modelDataPath = MODEL_BASE_DATA_PATH;
-                modelDir = MODEL_BASE_DIR;
-            }
-            else if (size == ModelSize.Large)
-            {
-                modelUrl = MODEL_LARGE_URL;
-                modelDataUrl = MODEL_LARGE_DATA_URL;
-                modelPath = MODEL_LARGE_PATH;
-                modelDataPath = MODEL_LARGE_DATA_PATH;
-                modelDir = MODEL_LARGE_DIR;
-            }
-
-            try
-            {
-                if (!Directory.Exists(modelDir))
-                {
-                    Directory.CreateDirectory(modelDir);
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"Failed to create models subdirectory: {ex.Message}");
-            }
-
-            _generateButton.SetEnabled(false);
-            _progressBar.RemoveFromClassList("hidden");
-            _progressBar.value = 0f;
-            _progressBar.title = "Downloading depth model (structure)...";
-
-            _downloadHandle = CPritch.DepthForge.Editor.Utils.ModelDownloader.DownloadModel(
-                modelUrl,
-                modelPath,
-                progress =>
-                {
-                    float currentProgress = progress * 0.05f;
-                    _progressBar.value = currentProgress;
-                    _progressBar.title = $"Downloading depth model (structure) ({(int)(progress * 100)}%)...";
-                    _generateButton.text = $"Downloading depth model ({(int)(currentProgress * 100)}%)...";
+                    if (_progressBar != null) { _progressBar.value = p; _progressBar.title = status; }
+                    if (_generateButton != null) _generateButton.text = status;
                 },
+                () => RunInference(inputTex, recipe),
                 error =>
                 {
-                    if (_downloadHandle != null && _downloadHandle.IsCancelled) return;
-
-                    if (!string.IsNullOrEmpty(error))
-                    {
-                        HandleDownloadFailure($"Failed to download model structure: {error}");
-                        return;
-                    }
-
-                    _progressBar.title = "Downloading depth model (weights)...";
-                    _downloadHandle = CPritch.DepthForge.Editor.Utils.ModelDownloader.DownloadModel(
-                        modelDataUrl,
-                        modelDataPath,
-                        progress =>
-                        {
-                            float currentProgress = 0.05f + progress * 0.95f;
-                            _progressBar.value = currentProgress;
-                            _progressBar.title = $"Downloading depth model (weights) ({(int)(progress * 100)}%)...";
-                            _generateButton.text = $"Downloading depth model ({(int)(currentProgress * 100)}%)...";
-                        },
-                        errorData =>
-                        {
-                            _generateButton.SetEnabled(true);
-                            _generateButton.text = "Generate Heightmap";
-                            _progressBar.AddToClassList("hidden");
-                            _downloadHandle = null;
-
-                            if (!string.IsNullOrEmpty(errorData))
-                            {
-                                if (errorData != "Download cancelled.")
-                                {
-                                    EditorUtility.DisplayDialog("Download Failed", $"Failed to download model weights:\n{errorData}", "OK");
-                                }
-                            }
-                            else
-                            {
-                                AssetDatabase.ImportAsset(modelPath);
-                                AssetDatabase.Refresh();
-
-                                ModelAsset modelAsset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
-                                if (modelAsset == null)
-                                {
-                                    EditorUtility.DisplayDialog("Import Failed", "Failed to load imported depth model into Unity's Asset Database.", "OK");
-                                    return;
-                                }
-
-                                RunInference(inputTex, modelAsset);
-                            }
-                        }
-                    );
-                }
-            );
+                    EndGeneratingUI();
+                    EditorUtility.DisplayDialog("Model Unavailable", error, "OK");
+                });
         }
 
-        private void EnsureGitIgnore()
+        private void RunInference(Texture2D inputTex, CPritch.DepthForge.Editor.Data.Recipe recipe)
         {
             try
             {
-                if (!Directory.Exists(MODEL_CACHE_DIR))
-                {
-                    Directory.CreateDirectory(MODEL_CACHE_DIR);
-                }
-                string gitignorePath = Path.Combine(MODEL_CACHE_DIR, ".gitignore");
-                if (!File.Exists(gitignorePath))
-                {
-                    File.WriteAllText(gitignorePath, "*\n!.gitignore\n");
-                }
+                _provider.Initialize(recipe);
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"Failed to write .gitignore in models cache: {ex.Message}");
-            }
-        }
-
-        private void HandleDownloadFailure(string errorMsg)
-        {
-            _generateButton.SetEnabled(true);
-            _generateButton.text = "Generate Heightmap";
-            _progressBar.AddToClassList("hidden");
-            _downloadHandle = null;
-            EditorUtility.DisplayDialog("Download Failed", errorMsg, "OK");
-        }
-
-        private void RunInference(Texture2D inputTex, ModelAsset modelAsset)
-        {
-            ModelSize selectedSize = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
-            InferenceBackend selectedBackend = _backendField != null ? (InferenceBackend)_backendField.value : InferenceBackend.Auto;
-
-            BackendType backend = BackendType.GPUCompute;
-            if (selectedBackend == InferenceBackend.CPUBurst)
-            {
-                backend = BackendType.CPU;
-            }
-            else if (selectedBackend == InferenceBackend.Auto)
-            {
-                if (selectedSize == ModelSize.Base || selectedSize == ModelSize.Large)
-                {
-                    backend = BackendType.CPU;
-                }
-                else
-                {
-                    backend = BackendType.GPUCompute;
-                }
-            }
-
-            try
-            {
-                _runner.Initialize(modelAsset, backend);
-            }
-            catch (Exception ex)
-            {
+                EndGeneratingUI();
                 Debug.LogError($"Inference init failed: {ex.Message}");
                 EditorUtility.DisplayDialog("Generation Error", $"Failed to initialize inference:\n{ex.Message}", "OK");
                 return;
             }
-
-            int targetSize = 518;
-            bool useTiling = _tiledInferenceToggle != null ? _tiledInferenceToggle.value : false;
-            DepthInferenceRunner.TilingAlignment tilingAlignment = _tilingAlignmentField != null ?
-                (DepthInferenceRunner.TilingAlignment)_tilingAlignmentField.value :
-                DepthInferenceRunner.TilingAlignment.LinearRegressionDownscaled;
-            bool letterbox = _letterboxToggle != null ? _letterboxToggle.value : true;
 
             // Non-blocking: the editor stays responsive while inference runs; results arrive via callback.
             if (_generateButton != null)
@@ -967,33 +851,46 @@ namespace CPritch.DepthForge.Editor
             {
                 _progressBar.RemoveFromClassList("hidden");
                 _progressBar.value = 0f;
-                _progressBar.title = "Running depth inference...";
+                _progressBar.title = "Running inference...";
             }
 
-            _runner.ExecuteAsync(inputTex, useTiling, tilingAlignment, letterbox,
+            _provider.ExecuteAsync(inputTex, recipe,
                 progress =>
                 {
                     if (_progressBar != null) _progressBar.value = progress;
                 },
-                result =>
+                maps =>
                 {
                     EndGeneratingUI();
-                    if (result != null)
-                    {
-                        if (_rawHeightmap != null) DestroyImmediate(_rawHeightmap);
-                        _rawHeightmap = result;
-                        UpdateAdjustedHeightmap();
-                        SetActionButtonsEnabled(true);
-                    }
+                    OnInferenceDone(maps);
                     Repaint();
                 },
                 error =>
                 {
                     EndGeneratingUI();
-                    Debug.LogError($"Heightmap generation failed: {error}");
-                    EditorUtility.DisplayDialog("Generation Error", $"An error occurred during heightmap generation:\n{error}", "OK");
+                    Debug.LogError($"Map generation failed: {error}");
+                    EditorUtility.DisplayDialog("Generation Error", $"An error occurred during generation:\n{error}", "OK");
                     Repaint();
                 });
+        }
+
+        /// <summary>Takes ownership of a provider's native <see cref="MapSet"/> and refreshes the workspace.</summary>
+        private void OnInferenceDone(MapSet maps)
+        {
+            if (maps == null) return;
+
+            // Height is always native (DA emits it; DepthForge bakes integration into the export).
+            if (_rawHeightmap != null) DestroyImmediate(_rawHeightmap);
+            _rawHeightmap = maps.height;
+
+            // Adopt any native normal/roughness; drop stale derived previews.
+            if (_nativeNormal != null) { DestroyImmediate(_nativeNormal); _nativeNormal = null; }
+            if (_nativeRoughness != null) { DestroyImmediate(_nativeRoughness); _nativeRoughness = null; }
+            if (maps.Has(MapKinds.Normal)) _nativeNormal = maps.normal;
+            if (maps.Has(MapKinds.Roughness)) _nativeRoughness = maps.roughness;
+
+            UpdateAdjustedHeightmap();
+            SetActionButtonsEnabled(true);
         }
 
         private void EndGeneratingUI()
@@ -1073,9 +970,12 @@ namespace CPritch.DepthForge.Editor
                 _currentJob.recipe = BuildRecipeFromUI();
             }
 
-            // Drop the current working heightmaps; the new focus loads its own.
+            // Drop the current working heightmaps; the new focus loads its own. Native model maps
+            // aren't cached, so a revisit re-derives normal/AO from the cached height (DA-style).
             if (_rawHeightmap != null) { DestroyImmediate(_rawHeightmap); _rawHeightmap = null; }
             if (_adjustedHeightmap != null) { DestroyImmediate(_adjustedHeightmap); _adjustedHeightmap = null; }
+            if (_nativeNormal != null) { DestroyImmediate(_nativeNormal); _nativeNormal = null; }
+            if (_nativeRoughness != null) { DestroyImmediate(_nativeRoughness); _nativeRoughness = null; }
             InvalidateMapPreviews();
 
             _currentJob = job;
@@ -1120,23 +1020,25 @@ namespace CPritch.DepthForge.Editor
                 return;
             }
 
-            ModelSize size = _modelSizeField != null ? (ModelSize)_modelSizeField.value : ModelSize.Small;
-            ModelAsset model = ResolveModelAsset(size);
-            if (model == null)
+            if (_provider == null)
             {
-                EditorUtility.DisplayDialog("Batch",
-                    "The selected model isn't downloaded yet. Run a single Generate once to download it, then batch.",
-                    "OK");
+                EditorUtility.DisplayDialog("Batch", "No inference provider is available.", "OK");
+                return;
+            }
+            if (!_provider.IsAvailable(out string reason))
+            {
+                EditorUtility.DisplayDialog("Batch", reason, "OK");
                 return;
             }
 
-            InferenceBackend backendChoice = _backendField != null ? (InferenceBackend)_backendField.value : InferenceBackend.Auto;
-            BackendType backend = ResolveBackend(size, backendChoice);
+            // One provider + one model load for the whole batch; each job's own recipe drives its
+            // tuning/maps. The representative recipe (current UI) selects the model + backend.
+            var initRecipe = BuildRecipeFromUI();
 
             _batchGenerateButton?.SetEnabled(false);
             _generateButton?.SetEnabled(false);
 
-            _batch = new BatchProcessor(_runner, _queue, model, backend,
+            _batch = new BatchProcessor(_provider, _queue, initRecipe,
                 job =>
                 {
                     _queueListView?.RefreshItems();
@@ -1170,33 +1072,6 @@ namespace CPritch.DepthForge.Editor
             int done = _queue.FindAll(j => j.state == CPritch.DepthForge.Editor.Data.JobState.Exported).Count;
             int errors = _queue.FindAll(j => j.state == CPritch.DepthForge.Editor.Data.JobState.Error).Count;
             _batchStatusLabel.text = $"{_queue.Count} queued · {done} done" + (errors > 0 ? $" · {errors} failed" : "");
-        }
-
-        private ModelAsset ResolveModelAsset(ModelSize size)
-        {
-            string modelPath = MODEL_SMALL_PATH;
-            if (size == ModelSize.Base) modelPath = MODEL_BASE_PATH;
-            else if (size == ModelSize.Large) modelPath = MODEL_LARGE_PATH;
-
-            if (!File.Exists(modelPath)) return null;
-
-            ModelAsset asset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
-            if (asset == null)
-            {
-                AssetDatabase.ImportAsset(modelPath);
-                asset = AssetDatabase.LoadAssetAtPath<ModelAsset>(modelPath);
-            }
-            return asset;
-        }
-
-        private BackendType ResolveBackend(ModelSize size, InferenceBackend choice)
-        {
-            if (choice == InferenceBackend.CPUBurst) return BackendType.CPU;
-            if (choice == InferenceBackend.Auto)
-            {
-                return (size == ModelSize.Base || size == ModelSize.Large) ? BackendType.CPU : BackendType.GPUCompute;
-            }
-            return BackendType.GPUCompute;
         }
 
         // ---- Presets (R6) -------------------------------------------------------------------
@@ -1436,8 +1311,9 @@ namespace CPritch.DepthForge.Editor
             if (_exportAOToggle != null) r.exportAO = _exportAOToggle.value;
             if (_aoStrengthSlider != null) r.aoStrength = _aoStrengthSlider.value;
             if (_outputFormatField != null) r.format = (CPritch.DepthForge.Editor.Utils.TextureExporter.ExportFormat)_outputFormatField.value;
+            if (_exportRoughnessToggle != null) r.exportRoughness = _exportRoughnessToggle.value;
             if (_autoAssignToggle != null) r.autoAssignMicroSplat = _autoAssignToggle.value;
-            // AO fields + preview-only strength are intentionally not bound here yet (AO = Phase 2).
+            r.providerId = _provider != null ? _provider.Info.id : r.providerId;
             return r;
         }
 
@@ -1470,6 +1346,20 @@ namespace CPritch.DepthForge.Editor
                 _aoStrengthSlider.SetEnabled(r.exportAO);
             }
             if (_outputFormatField != null) _outputFormatField.SetValueWithoutNotify(r.format);
+            if (_exportRoughnessToggle != null) _exportRoughnessToggle.SetValueWithoutNotify(r.exportRoughness);
+
+            // Reflect the recipe's provider (if it names one that's available in this build).
+            if (!string.IsNullOrEmpty(r.providerId) && _providers != null)
+            {
+                var p = ProviderRegistry.ById(_providers, r.providerId);
+                if (p != null)
+                {
+                    _provider = p;
+                    _providerField?.SetValueWithoutNotify(p.Info.displayName);
+                    UpdateProviderDependentUI();
+                }
+            }
+
             // Refresh the derived preview only if a heightmap already exists for this source.
             if (_rawHeightmap != null) UpdateAdjustedHeightmap();
             // The loaded recipe may diverge from the selected preset — reflect that in the * marker.
@@ -1699,26 +1589,34 @@ namespace CPritch.DepthForge.Editor
 
             if (path != null)
             {
-                // Optionally derive a normal map from the same adjusted heightmap. This gives MicroSplat
-                // real normal data rather than letting it synthesize (often poor) normals from the diffuse.
+                var savedRecipe = BuildRecipeFromUI();
+                var maps = CurrentMapSet();
+
+                // Normal: use the provider's native normal when present (better than synthesised);
+                // otherwise derive one from the adjusted height (the Depth Anything path).
                 string normalPath = null;
-                bool exportNormal = _exportNormalToggle != null && _exportNormalToggle.value;
-                if (exportNormal)
+                if (savedRecipe.exportNormal)
                 {
-                    float normalStrength = _normalStrengthSlider != null ? _normalStrengthSlider.value : 8f;
-                    Texture2D normalTex = ImageProcessor.GenerateNormalMap(_adjustedHeightmap, normalStrength);
+                    bool derived;
+                    Texture2D normalTex = MapPipeline.BuildNormal(maps, savedRecipe, _adjustedHeightmap, out derived);
                     if (normalTex != null)
                     {
                         normalPath = CPritch.DepthForge.Editor.Utils.TextureExporter.SaveNormalMap(normalTex, inputTex);
-                        DestroyImmediate(normalTex);
+                        if (derived) DestroyImmediate(normalTex);
                     }
                 }
 
-                // Optionally derive an ambient-occlusion map from the same adjusted heightmap so the
-                // exported map set (Height + Normal + AO) is complete and consistent.
+                // Roughness: native only (absent for depth-style providers).
+                string roughnessPath = null;
+                Texture2D nativeRough = MapPipeline.NativeRoughness(maps);
+                if (savedRecipe.exportRoughness && nativeRough != null)
+                {
+                    roughnessPath = CPritch.DepthForge.Editor.Utils.TextureExporter.SaveRoughness(nativeRough, inputTex);
+                }
+
+                // AO is always derived from the adjusted height.
                 string aoPath = null;
-                bool exportAO = _exportAOToggle != null && _exportAOToggle.value;
-                if (exportAO)
+                if (savedRecipe.exportAO)
                 {
                     float aoStrength = _aoStrengthSlider != null ? _aoStrengthSlider.value : 1f;
                     float aoRadius = _currentJob != null ? _currentJob.recipe.aoRadius : 0.02f;
@@ -1740,10 +1638,12 @@ namespace CPritch.DepthForge.Editor
                 }
 
                 // Phase 1 (R5): persist the recipe sidecar so this depth work is re-editable later.
-                var savedRecipe = BuildRecipeFromUI();
                 if (_currentJob == null) _currentJob = new CPritch.DepthForge.Editor.Data.Job(inputTex);
                 _currentJob.recipe = savedRecipe;
                 _currentJob.state = CPritch.DepthForge.Editor.Data.JobState.Exported;
+                _currentJob.heightmapPath = path;
+                _currentJob.normalPath = normalPath;
+                _currentJob.roughnessPath = roughnessPath;
                 CPritch.DepthForge.Editor.Data.RecipeSidecar.Save(inputTex, savedRecipe);
                 // Cache the raw (pre-adjustment) depth so revisiting this source restores an
                 // editable result without re-running inference.
@@ -1751,9 +1651,20 @@ namespace CPritch.DepthForge.Editor
 
                 string message = $"Heightmap exported to:\n{path}";
                 if (normalPath != null) message += $"\n\nNormal map:\n{normalPath}";
+                if (roughnessPath != null) message += $"\n\nRoughness map:\n{roughnessPath}";
                 if (aoPath != null) message += $"\n\nAO map:\n{aoPath}";
                 EditorUtility.DisplayDialog("Success", message, "Awesome");
             }
+        }
+
+        /// <summary>A MapSet view over the focused source's current working maps (native height +
+        /// any native normal/roughness), for MapPipeline-driven export.</summary>
+        private MapSet CurrentMapSet()
+        {
+            var native = MapKinds.Height;
+            if (_nativeNormal != null) native |= MapKinds.Normal;
+            if (_nativeRoughness != null) native |= MapKinds.Roughness;
+            return new MapSet { height = _rawHeightmap, normal = _nativeNormal, roughness = _nativeRoughness, native = native };
         }
 
         private void OnPreviewMeshClicked()

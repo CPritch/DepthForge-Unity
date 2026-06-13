@@ -25,6 +25,7 @@ namespace CPritch.DepthForge.Editor.Data
         // Last-exported asset paths (transient) — used by batch MicroSplat assign-all.
         public string heightmapPath;
         public string normalPath;
+        public string roughnessPath;
 
         public Job() { }
 

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
-using Unity.InferenceEngine;
 using CPritch.DepthForge.Editor.Data;
 using CPritch.DepthForge.Editor.Inference;
 using CPritch.DepthForge.Editor.Utils;
@@ -10,18 +9,18 @@ using CPritch.DepthForge.Editor.Utils;
 namespace CPritch.DepthForge.Editor
 {
     /// <summary>
-    /// Drives a queue of <see cref="Job"/>s through inference + adjustments + map export sequentially,
-    /// reusing a single Worker (one model load for the whole batch — VRAM cost paid once). Non-blocking:
-    /// each job's inference runs via the runner's async path, and jobs are chained across editor ticks
-    /// so the editor stays responsive. The batch uses one model (chosen by the caller) for all jobs;
-    /// each job's own recipe drives its adjustments, maps, and export.
+    /// Drives a queue of <see cref="Job"/>s through an <see cref="IMapProvider"/> + adjustments + map
+    /// export sequentially, loading the model once for the whole batch. Non-blocking: each job's
+    /// inference runs via the provider's async path, and jobs are chained across editor ticks so the
+    /// editor stays responsive. The batch uses one provider/model (chosen by the caller via the
+    /// representative recipe) for all jobs; each job's own recipe drives its tuning, maps, and export.
+    /// Native vs. derived maps are resolved by <see cref="MapPipeline"/>, identical to single export.
     /// </summary>
     public class BatchProcessor
     {
-        private readonly DepthInferenceRunner _runner;
+        private readonly IMapProvider _provider;
         private readonly List<Job> _jobs;
-        private readonly ModelAsset _model;
-        private readonly BackendType _backend;
+        private readonly Recipe _initRecipe;
         private readonly Action<Job> _onJobChanged;
         private readonly Action<int, int> _onProgress;
         private readonly Action _onAllDone;
@@ -29,13 +28,12 @@ namespace CPritch.DepthForge.Editor
         private int _index;
         public bool IsRunning { get; private set; }
 
-        public BatchProcessor(DepthInferenceRunner runner, List<Job> jobs, ModelAsset model, BackendType backend,
+        public BatchProcessor(IMapProvider provider, List<Job> jobs, Recipe initRecipe,
                               Action<Job> onJobChanged, Action<int, int> onProgress, Action onAllDone)
         {
-            _runner = runner;
+            _provider = provider;
             _jobs = jobs;
-            _model = model;
-            _backend = backend;
+            _initRecipe = initRecipe;
             _onJobChanged = onJobChanged;
             _onProgress = onProgress;
             _onAllDone = onAllDone;
@@ -47,7 +45,7 @@ namespace CPritch.DepthForge.Editor
 
             try
             {
-                _runner.Initialize(_model, _backend); // load the model / Worker once for the whole batch
+                _provider.Initialize(_initRecipe); // load the model / worker once for the whole batch
             }
             catch (Exception ex)
             {
@@ -82,34 +80,45 @@ namespace CPritch.DepthForge.Editor
             job.error = null;
             _onJobChanged?.Invoke(job);
 
-            bool useTiling = job.recipe.tiledInference;
-            var alignment = (DepthInferenceRunner.TilingAlignment)(int)job.recipe.tilingAlignment;
-            bool letterbox = job.recipe.letterbox;
-
-            _runner.ExecuteAsync(job.source, useTiling, alignment, letterbox,
+            _provider.ExecuteAsync(job.source, job.recipe,
                 _ => { },
-                raw => CompleteJob(job, raw),
+                maps => CompleteJob(job, maps),
                 err => { job.state = JobState.Error; job.error = err; AdvanceAfter(job); });
         }
 
-        private void CompleteJob(Job job, Texture2D raw)
+        private void CompleteJob(Job job, MapSet maps)
         {
+            Texture2D adjusted = null;
             try
             {
-                if (raw == null) { job.state = JobState.Error; job.error = "No inference result."; AdvanceAfter(job); return; }
+                if (maps == null || maps.height == null)
+                {
+                    job.state = JobState.Error; job.error = "No inference result."; AdvanceAfter(job); return;
+                }
 
                 Recipe r = job.recipe;
-                Texture2D adjusted = ImageProcessor.ApplyAdjustments(raw, r.contrast, r.midpoint, r.invert, r.flatten);
+                adjusted = MapPipeline.BuildAdjustedHeight(maps, r);
 
-                // Record export paths so the Window can do a single MicroSplat assign-all afterwards.
-                job.normalPath = null;
                 job.heightmapPath = TextureExporter.SaveHeightmap(adjusted, job.source, r.format);
+                job.normalPath = null;
+                job.roughnessPath = null;
 
                 if (r.exportNormal)
                 {
-                    Texture2D n = ImageProcessor.GenerateNormalMap(adjusted, r.normalStrength);
-                    if (n != null) { job.normalPath = TextureExporter.SaveNormalMap(n, job.source); UnityEngine.Object.DestroyImmediate(n); }
+                    Texture2D n = MapPipeline.BuildNormal(maps, r, adjusted, out bool derived);
+                    if (n != null)
+                    {
+                        job.normalPath = TextureExporter.SaveNormalMap(n, job.source);
+                        if (derived) UnityEngine.Object.DestroyImmediate(n);
+                    }
                 }
+
+                Texture2D nativeRough = MapPipeline.NativeRoughness(maps);
+                if (r.exportRoughness && nativeRough != null)
+                {
+                    job.roughnessPath = TextureExporter.SaveRoughness(nativeRough, job.source);
+                }
+
                 if (r.exportAO)
                 {
                     Texture2D a = ImageProcessor.GenerateAO(adjusted, r.aoStrength, r.aoRadius);
@@ -117,10 +126,8 @@ namespace CPritch.DepthForge.Editor
                 }
 
                 RecipeSidecar.Save(job.source, r);
-                RawCache.SaveRaw(job.source, raw);
+                RawCache.SaveRaw(job.source, maps.height);
                 job.state = JobState.Exported;
-
-                UnityEngine.Object.DestroyImmediate(adjusted);
             }
             catch (Exception ex)
             {
@@ -130,7 +137,14 @@ namespace CPritch.DepthForge.Editor
             }
             finally
             {
-                if (raw != null) UnityEngine.Object.DestroyImmediate(raw);
+                if (adjusted != null) UnityEngine.Object.DestroyImmediate(adjusted);
+                // Native maps are transient per job; release them now that export is done.
+                if (maps != null)
+                {
+                    if (maps.height != null) UnityEngine.Object.DestroyImmediate(maps.height);
+                    if (maps.normal != null) UnityEngine.Object.DestroyImmediate(maps.normal);
+                    if (maps.roughness != null) UnityEngine.Object.DestroyImmediate(maps.roughness);
+                }
             }
 
             AdvanceAfter(job);
